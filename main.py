@@ -20,7 +20,7 @@ from src.strategies import select_acquisition_fn
 
 import warnings
 import logging
-logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
+# logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
 warnings.filterwarnings("ignore", ".*does not have many workers.*")
 wandb.login()
 
@@ -34,8 +34,8 @@ def main(args):
         print(str(arg) + ': ' + str(getattr(args, arg)))
     # Set global seed
     seed_everything(config.seed)
-    # if config.debug: # This mode turns on more detailed torch error descriptions
-    #     torch.autograd.set_detect_anomaly(True)
+    if config.debug: # This mode turns on more detailed torch error descriptions
+        torch.autograd.set_detect_anomaly(True)
 
     # --------------------------------------- Active learning: Seed phase ---------------------------------------------
     # Build datamodule
@@ -43,7 +43,8 @@ def main(args):
                            seed_size=config.seed_size,
                            max_length=config.max_length,
                            batch_size=config.batch_size,
-                           num_workers=config.num_workers)
+                           num_workers=config.num_workers,
+                           input_dir=config.input_dir)
     dm.prepare_data()
     # dm.setup(stage="fit")
 
@@ -126,6 +127,13 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
 
+    # Lisa args:
+
+    parser.add_argument('--input_dir', default=None, type=str,
+                        help='specifies where to read datasets from scratch disk')
+    parser.add_argument('--output_dir', default=None, type=str,
+                        help='specifies where on scratch disk output should be stored')
+
     # Program args
     parser.add_argument('--seed', default=42, type=int,
                         help='specifies global seed')
@@ -159,13 +167,13 @@ if __name__ == '__main__':
                         help='max no of tokens for tokenizer (default is enough for all tasks')
 
     # Lightning Trainer args
-    num_gpus = 1 if device_count() > 0 else None
+    num_gpus = device_count() if device_count() > 0 else None # TODO update this value once everything work such that we can utilize all GPUs
     parser.add_argument('--gpus', default=num_gpus)
 
     accelerator = None if device_count() > 0 else None
     parser.add_argument('--accelerator', default=accelerator)
 
-    num_workers = os.cpu_count() if device_count() > 0 else 1 #TODO this may or may not lead to some speed bottlenecks
+    num_workers = os.cpu_count() if device_count() > 0 else 1 # TODO this may or may not lead to some speed bottlenecks
     parser.add_argument('--num_workers', default=num_workers, type=int,
                         help='no. of workers for DataLoaders')
 
@@ -174,7 +182,7 @@ if __name__ == '__main__':
                         help='number of steps between loggings')
 
     # Auxiliary args
-    parser.add_argument('--debug', default=False, type=bool,
+    parser.add_argument('--debug', default=True, type=bool,
                         help='toggle elaborate torch errors')
     parser.add_argument('--toy_run', default=1, type=int,
                         help='set no of batches per datasplit per epoch (helpful for debugging)')

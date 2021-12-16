@@ -14,9 +14,9 @@ import torch
 from torch.optim import Adam
 from pytorch_lightning.core.lightning import LightningModule
 import torchmetrics
+import transformers
 from transformers import AutoTokenizer
 from transformers import BertForSequenceClassification
-from transformers import logging
 
 from torchmetrics.functional import accuracy
 
@@ -27,7 +27,7 @@ class TransformerModel(LightningModule):
     def __init__(self, dropout, lr, model_id, batch_size):
         super().__init__()
 
-        logging.set_verbosity_error()
+        # transformers.logging.set_verbosity_error()
         self.dropout = dropout # dropout applied to BERT
         self.lr = lr # learning rate
         self.max_length = 180
@@ -133,6 +133,19 @@ class TransformerModel(LightningModule):
 
         input_ids, token_type_ids, attention_masks = self.tokenize_batch(batch)
         labels = batch['label']
+
+        print('input_ids')
+        print(input_ids)
+        print('token_type_ids')
+        print(token_type_ids)
+        print('attention_masks')
+        print(attention_masks)
+        print('labels')
+        print(labels)
+
+        sys.exit()
+
+
 
         outputs = self(input_ids=input_ids,
                        attention_masks=attention_masks,

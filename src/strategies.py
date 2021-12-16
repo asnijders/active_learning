@@ -32,6 +32,7 @@ from src.coresets import CoresetGreedy
 
 class AcquisitionFunction:
     def __init__(self):
+
         pass
 
     def acquire_instances(self, config, model, dm, k):

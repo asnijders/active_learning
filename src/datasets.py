@@ -15,13 +15,16 @@ import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
-def read_dataset(dataset_id, split):
+def read_dataset(input_dir, dataset_id, split):
     """
     This function takes a dataset id and reads the corresponding .json split in an appropriate Pandas DataFrame
+    :param input_dir:
     :param dataset_id: str indicating which dataset should be read
     :param split: str indicating which split should be read
     :return: DataFrame with examples (Premise, Hypothesis, Label, ID)
     """
+
+
 
     # TODO implement the above logic for MNLI, FEVER, ETC!
 
@@ -35,7 +38,7 @@ def read_dataset(dataset_id, split):
     if dataset_id == 'SNLI':
 
         # TODO only consider snli with gold labels?
-        data_path = 'resources/data/snli_1.0/snli_1.0_{}.jsonl'.format(split)
+        data_path = '{}/snli_1.0/snli_1.0_{}.jsonl'.format(input_dir, split)
         dataset = pd.read_json(data_path, lines=True)
         dataset = dataset[['sentence1', 'sentence2', 'gold_label', 'pairID']]
 
@@ -43,7 +46,7 @@ def read_dataset(dataset_id, split):
 
         anli_dfs = []  # TODO think about how I want to implement logic for multiple rounds
         for data_round in ['R1', 'R2', 'R3']:
-            data_path = 'resources/data/anli_v1.0/{}/{}.jsonl'.format(data_round, split)
+            data_path = '{}/anli_v1.0/{}/{}.jsonl'.format(input_dir, data_round, split)
             anli_dataset = pd.read_json(data_path, lines=True)
             anli_dataset = anli_dataset[['context', 'hypothesis', 'label', 'uid']]  # get rid of unnecessary columns
             anli_dataset['label'] = anli_dataset['label'].apply(replace_labels)  # ensures consistently named labels
@@ -70,12 +73,13 @@ def read_dataset(dataset_id, split):
     return dataset
 
 
-def combine_datasets(datasets, split):
+def combine_datasets(input_dir, datasets, split):
     """
     This function takes a list of NLI dataset names and
     concatenates all examples from each corresponding dataset
     for the provided data split (train/dev/test) into a single multi-dataset.
 
+    :param input_dir:
     :param datasets: list with dataset names
     :param split: string indicating data split of interest
     :return: DataFrame with examples and labels for all datasets for split of interest
@@ -83,7 +87,7 @@ def combine_datasets(datasets, split):
 
     # If we only consider a single dataset, we can just read and return it
     if len(datasets) == 1:
-        return read_dataset(datasets[0], split)
+        return read_dataset(input_dir, datasets[0], split)
 
     # If we consider multiple datasets we have to combine them into a single dataset
 
@@ -92,7 +96,7 @@ def combine_datasets(datasets, split):
 
     # 2. load individual datasets and append to list
     for dataset_id in datasets:
-        dataset = read_dataset(dataset_id, split)
+        dataset = read_dataset(input_dir, dataset_id, split)
 
         # 3. add dataset to multi-dataset
         dataset_list.append(dataset)
@@ -152,7 +156,7 @@ class DataPool(Dataset):
     This class implements the Pytorch Lightning Dataset object for multiple NLI datasets
     """
 
-    def __init__(self, datasets, seed_size, split, max_length=180, model='bert-base-uncased'):
+    def __init__(self, input_dir, datasets, seed_size, split, max_length=180, model='bert-base-uncased'):
         """
         :param datasets: datasets: list with dataset names
         :param split: string indicating which split should be accessed
@@ -168,24 +172,16 @@ class DataPool(Dataset):
         if split == 'train':
 
             # first, we combine multiple NLI datasets into a single dataset and compile them in unlabeled pool U
-            self.U = combine_datasets(datasets, split)
+            self.U = combine_datasets(input_dir, datasets, split)
 
-            if self.downsample is True:
+            # TODO add a downsampling mechanism here
+            # if self.downsample is True:
 
-
-            # we then randomly draw k instances from U for the initial set L
-            # if seed_size is an integer, an equivalent number of examples is drawn for L
-            # if seed size is a float, an equivalent percentage of examples from U is drawn from L
-            if seed_size > 1:
-                self.seed_size = self.seed_size
-            elif 0 < seed_size < 1:
-                self.seed_size = self.set_seed_size(seed_size)
-
-            self.L = self.label_instances_randomly(k=self.seed_size)
+            self.L = self.label_instances_randomly(k=seed_size)
 
         else:
 
-            self.L = combine_datasets(datasets, split)
+            self.L = combine_datasets(input_dir, datasets, split)
 
         self.data = self.L
         self.max_length = max_length
@@ -228,10 +224,20 @@ class DataPool(Dataset):
         else:
             raise KeyError('{} is not a valid mode. Use mode=L or mode=U.'.format(mode))
 
-    def set_seed_size(self, percentage):
-        assert 0 < percentage < 1
-        num_unlabelled_examples = len(self.U)
-        return int(percentage * num_unlabelled_examples)
+    def set_k(self, k):
+        """
+        if k is an integer we draw k samples from the unlabelled pool
+        if k is a percentage we draw the corresponding % from the unlabelled pool
+        """
+
+        if k > 1:
+            pass
+        elif 0 < k < 1:
+            k = int(k * len(self.U))
+        else:
+            raise ValueError('value for k must be percentage or integer > 1')
+
+        return k
 
     def label_instances_randomly(self, k):
         """
@@ -240,8 +246,10 @@ class DataPool(Dataset):
         :param k: size of initial pool of labelled examples
         :return:
         """
+
         # select k instances from U to be labelled for initial seed L.
         # Make sure to remove these instances from U.
+        k = self.set_k(k)
         self.U = self.U.reset_index(drop=True)
 
         print('Drawing {} random samples from unlabelled set U for seed set L..'.format(k))
@@ -298,9 +306,10 @@ class GenericDataModule(pl.LightningDataModule):
     This Lightning module produces DataLoaders using DataPool instances
     """
 
-    def __init__(self, datasets, seed_size, max_length, batch_size, num_workers):
+    def __init__(self, input_dir, datasets, seed_size, max_length, batch_size, num_workers):
         super().__init__()
 
+        self.input_dir = input_dir
         self.datasets = datasets
         self.seed_size = seed_size
         self.max_length = max_length
@@ -317,19 +326,22 @@ class GenericDataModule(pl.LightningDataModule):
 
             print('\nBuilding train pool..')
             if self.train is None:
-                self.train = DataPool(datasets=self.datasets,
+                self.train = DataPool(input_dir=self.input_dir,
+                                      datasets=self.datasets,
                                       seed_size=self.seed_size,
                                       split='train',
                                       max_length=self.max_length)
 
             print('\nBuilding dev and test sets..')
             if self.val is None:
-                self.val = DataPool(datasets=self.datasets,
+                self.val = DataPool(input_dir=self.input_dir,
+                                    datasets=self.datasets,
                                     seed_size=self.seed_size,
                                     split='dev',
                                     max_length=self.max_length)
             if self.test is None:
-                self.test = DataPool(datasets=self.datasets,
+                self.test = DataPool(input_dir=self.input_dir,
+                                     datasets=self.datasets,
                                      seed_size=self.seed_size,
                                      split='test',
                                      max_length=self.max_length)

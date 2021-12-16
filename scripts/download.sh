@@ -1,5 +1,7 @@
 #!/bin/bash
 
+cd $HOME/active_learning/resources/data
+
 ## snli ; data/snli_1.0
 if [[ ! -d snli_1.0 ]]; then
   curl -Lo snli_1.0.zip 'https://nlp.stanford.edu/projects/snli/snli_1.0.zip'
