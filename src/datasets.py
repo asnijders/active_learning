@@ -115,43 +115,6 @@ def combine_datasets(input_dir, datasets, split):
     return combined_dataset
 
 
-class EvaluationSet(Dataset):
-    """
-    This class implements the Pytorch Lightning Dataset object for separate NLI evaluation sets
-    """
-
-    def __init__(self, dataset_id, split, max_length=180, model='bert-base-uncased'):
-        """
-        :param dataset_id: str indicating which dataset should be read
-        :param split: string indicating which split (dev/test) should be read
-        """
-        # create single multi-dataset for desired data split (train, dev or test)
-        # for the training split, we consider all examples as unlabelled and start training with a seed set L
-        self.text = read_dataset(dataset_id, split)
-
-        # initialise tokenizer
-        self.max_length = max_length
-        self.label2id = {"entailment": 0,
-                         "contradiction": 1,
-                         "neutral": 2}
-
-    def __len__(self):
-        return len(self.text)
-
-    def __getitem__(self, idx):
-        if torch.is_tensor(idx):
-            idx = idx.tolist()
-
-        premise, hypothesis, label, _ = self.text.iloc[idx]
-        label = self.label2id[label]
-
-        sample = {"premise": premise,
-                  "hypothesis": hypothesis,
-                  "label": label}
-
-        return sample
-
-
 class DataPool(Dataset):
     """
     This class implements the Pytorch Lightning Dataset object for multiple NLI datasets
@@ -206,26 +169,6 @@ class DataPool(Dataset):
         premise, hypothesis, label, _ = self.data.iloc[idx]
 
         label = self.label2id[label]
-        #
-        # # tokenize sentence and convert to sequence of ids
-        # tokenized_input_seq_pair = self.tokenizer.encode_plus(text=premise,
-        #                                                       text_pair=hypothesis,
-        #                                                       add_special_tokens=True,
-        #                                                       max_length=350,
-        #                                                       padding=False,
-        #                                                       return_attention_mask=True,
-        #                                                       return_token_type_ids=True,
-        #                                                       return_tensors='pt',
-        #                                                       truncation=True)
-        #
-        # input_ids = tokenized_input_seq_pair['input_ids'].squeeze(0)
-        # token_type_ids = tokenized_input_seq_pair['token_type_ids'].squeeze(0)
-        # attention_masks = tokenized_input_seq_pair['attention_mask'].squeeze(0)
-        #
-        # sample = {'input_ids': input_ids,
-        #           'token_type_ids': token_type_ids,
-        #           'attention_masks': attention_masks,
-        #           'label': label}
 
         sample = {'premise': premise,
                   'hypothesis': hypothesis,
@@ -335,13 +278,6 @@ class GenericDataModule(pl.LightningDataModule):
 
     def __init__(self, config):
         super().__init__()
-
-        # self.input_dir = config.input_dir
-        # self.datasets = config.datasets
-        # self.seed_size = config.seed_size
-        # self.max_length = config.max_length
-        # self.batch_size = config.batch_size
-        # self.num_workers = config.num_workers
 
         self.config = config
         self.tokenizer = AutoTokenizer.from_pretrained(config.model_id)
