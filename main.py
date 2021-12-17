@@ -54,7 +54,10 @@ def main(args):
                              batch_size=config.batch_size)
 
     # initialise PL logging and trainer objects
-    seed_logger = WandbLogger(project="active_learning_seed")
+    seed_logger = WandbLogger(project="active_learning_seed",
+                              save_dir=config.output_dir,
+                              log_model=False)
+
     seed_trainer = Trainer(gpus=config.gpus,
                            logger=seed_logger,
                            log_every_n_steps=config.log_every,
@@ -81,7 +84,10 @@ def main(args):
     acquisition_fn = select_acquisition_fn(config.acquisition_fn)
 
     # define new trainer and logger specific to active learning phase
-    active_logger = WandbLogger(project="active_learning_iter")
+    active_logger = WandbLogger(project="active_learning_iter",
+                                save_dir=config.output_dir,
+                                log_model=False)
+
     active_trainer = Trainer(gpus=config.gpus,
                              logger=active_logger,
                              log_every_n_steps=config.log_every,

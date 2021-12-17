@@ -129,3 +129,4 @@ dmypy.json
 /resources/ard_data/multinli_1.0/*
 /resources/ard_data/nli_fever/*
 /resources/ard_data/snli_1.0/*
+/slurm/
