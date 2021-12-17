@@ -8,6 +8,8 @@ import torch
 import pandas as pd
 import pytorch_lightning as pl
 from torch.utils.data import Dataset, DataLoader
+from transformers import AutoTokenizer
+from transformers import DataCollatorWithPadding
 
 import numpy as np
 import os
@@ -24,8 +26,6 @@ def read_dataset(input_dir, dataset_id, split):
     :return: DataFrame with examples (Premise, Hypothesis, Label, ID)
     """
 
-
-
     # TODO implement the above logic for MNLI, FEVER, ETC!
 
     def replace_labels(label):
@@ -41,6 +41,7 @@ def read_dataset(input_dir, dataset_id, split):
         data_path = '{}/snli_1.0/snli_1.0_{}.jsonl'.format(input_dir, split)
         dataset = pd.read_json(data_path, lines=True)
         dataset = dataset[['sentence1', 'sentence2', 'gold_label', 'pairID']]
+        dataset = dataset.drop(dataset[dataset.gold_label.str.contains('-')].index)  # drop examples with no gold label
 
     elif dataset_id == 'ANLI':
 
@@ -68,7 +69,7 @@ def read_dataset(input_dir, dataset_id, split):
 
     # ensure consistent headers per dataset DataFrame
     dataset.columns = ['Premise', 'Hypothesis', 'Label', 'ID']
-    print(f"{'{} {} size:'.format(dataset_id, split):<30}{len(dataset):<32}")
+    print(f"{'{} {} size:'.format(dataset_id, split):<30}{len(dataset):<32}", flush=True)
 
     return dataset
 
@@ -109,7 +110,7 @@ def combine_datasets(input_dir, datasets, split):
     combined_dataset = combined_dataset.reset_index(drop=True)
     combined_dataset.ID = combined_dataset.index
 
-    print(f"{'Total {} size:'.format(split):<30}{len(combined_dataset):<32}", '\n')
+    print(f"{'Total {} size:'.format(split):<30}{len(combined_dataset):<32}", '\n', flush=True)
 
     return combined_dataset
 
@@ -156,7 +157,7 @@ class DataPool(Dataset):
     This class implements the Pytorch Lightning Dataset object for multiple NLI datasets
     """
 
-    def __init__(self, input_dir, datasets, seed_size, split, max_length=180, model='bert-base-uncased'):
+    def __init__(self, config, split):
         """
         :param datasets: datasets: list with dataset names
         :param split: string indicating which split should be accessed
@@ -169,22 +170,27 @@ class DataPool(Dataset):
         # TODO: add a unique ID to each example in the unlabelled pool,
         #  _just_ after creating the full dataframes. Then we can use that as an extra check for duplicates
 
+        self.input_dir = config.input_dir
+        self.datasets = config.datasets
+        self.seed_size = config.seed_size
+        self.max_length = config.max_length
+        self.model_id = config.model_id
+
         if split == 'train':
 
             # first, we combine multiple NLI datasets into a single dataset and compile them in unlabeled pool U
-            self.U = combine_datasets(input_dir, datasets, split)
+            self.U = combine_datasets(self.input_dir, self.datasets, split)
 
             # TODO add a downsampling mechanism here
             # if self.downsample is True:
 
-            self.L = self.label_instances_randomly(k=seed_size)
+            self.L = self.label_instances_randomly(k=self.seed_size)
 
         else:
 
-            self.L = combine_datasets(input_dir, datasets, split)
+            self.L = combine_datasets(self.input_dir, self.datasets, split)
 
         self.data = self.L
-        self.max_length = max_length
         self.label2id = {"entailment": 0,
                          "contradiction": 1,
                          "neutral": 2}
@@ -198,11 +204,32 @@ class DataPool(Dataset):
             idx = idx.tolist()
 
         premise, hypothesis, label, _ = self.data.iloc[idx]
-        label = self.label2id[label]
 
-        sample = {"premise": premise,
-                  "hypothesis": hypothesis,
-                  "label": label}
+        label = self.label2id[label]
+        #
+        # # tokenize sentence and convert to sequence of ids
+        # tokenized_input_seq_pair = self.tokenizer.encode_plus(text=premise,
+        #                                                       text_pair=hypothesis,
+        #                                                       add_special_tokens=True,
+        #                                                       max_length=350,
+        #                                                       padding=False,
+        #                                                       return_attention_mask=True,
+        #                                                       return_token_type_ids=True,
+        #                                                       return_tensors='pt',
+        #                                                       truncation=True)
+        #
+        # input_ids = tokenized_input_seq_pair['input_ids'].squeeze(0)
+        # token_type_ids = tokenized_input_seq_pair['token_type_ids'].squeeze(0)
+        # attention_masks = tokenized_input_seq_pair['attention_mask'].squeeze(0)
+        #
+        # sample = {'input_ids': input_ids,
+        #           'token_type_ids': token_type_ids,
+        #           'attention_masks': attention_masks,
+        #           'label': label}
+
+        sample = {'premise': premise,
+                  'hypothesis': hypothesis,
+                  'label': label}
 
         return sample
 
@@ -252,7 +279,7 @@ class DataPool(Dataset):
         k = self.set_k(k)
         self.U = self.U.reset_index(drop=True)
 
-        print('Drawing {} random samples from unlabelled set U for seed set L..'.format(k))
+        print('Drawing {} random samples from unlabelled set U for seed set L..'.format(k), flush=True)
 
         # initialize empty seed dataset L
         L = pd.DataFrame(columns=self.U.columns)
@@ -285,9 +312,9 @@ class DataPool(Dataset):
         self.L = self.L.append(new_examples).reset_index(drop=True)  # Add them to the labelled pool
         self.U = self.U.drop(new_examples.index).reset_index(drop=True)  # Remove examples from unlabelled pool
         self.assert_disjoint()  # check whether U and L are disjoint
-        print('Labelled {} new instances'.format(len(new_examples)))
-        print(f"{'Total size unlabelled pool:':<30}{len(self.U):<32}")
-        print(f"{'Total size labelled pool:':<30}{len(self.L):<32}")
+        print('Labelled {} new instances'.format(len(new_examples)), flush=True)
+        print(f"{'Total size unlabelled pool:':<30}{len(self.U):<32}", flush=True)
+        print(f"{'Total size labelled pool:':<30}{len(self.L):<32}", flush=True)
 
         return None
 
@@ -306,59 +333,103 @@ class GenericDataModule(pl.LightningDataModule):
     This Lightning module produces DataLoaders using DataPool instances
     """
 
-    def __init__(self, input_dir, datasets, seed_size, max_length, batch_size, num_workers):
+    def __init__(self, config):
         super().__init__()
 
-        self.input_dir = input_dir
-        self.datasets = datasets
-        self.seed_size = seed_size
-        self.max_length = max_length
-        self.batch_size = batch_size
-        self.num_workers = num_workers
+        # self.input_dir = config.input_dir
+        # self.datasets = config.datasets
+        # self.seed_size = config.seed_size
+        # self.max_length = config.max_length
+        # self.batch_size = config.batch_size
+        # self.num_workers = config.num_workers
+
+        self.config = config
+        self.tokenizer = AutoTokenizer.from_pretrained(config.model_id)
+        self.collator = DataCollatorWithPadding(tokenizer=self.tokenizer,
+                                                padding='longest',
+                                                max_length=config.max_length)
 
         self.train = None
         self.val = None
         self.test = None
+        self.label2id = {"entailment": 0,
+                         "contradiction": 1,
+                         "neutral": 2}
+
+    def batch_tokenize(self, batch):
+
+        premises = [sample['premise'] for sample in batch]
+        hypotheses = [sample['hypothesis'] for sample in batch]
+        labels = [sample['label'] for sample in batch]
+
+        labels = torch.tensor(labels)
+
+        # tokenize sentence and convert to sequence of ids
+        tokenized_input_seq_pairs = self.tokenizer.__call__(text=premises,
+                                                            text_pair=hypotheses,
+                                                            add_special_tokens=True,
+                                                            max_length=350,
+                                                            padding='longest',
+                                                            return_attention_mask=True,
+                                                            return_token_type_ids=True,
+                                                            return_tensors='pt',
+                                                            truncation=True)
+
+        input_ids = tokenized_input_seq_pairs['input_ids']
+        token_type_ids = tokenized_input_seq_pairs['token_type_ids']
+        attention_masks = tokenized_input_seq_pairs['attention_mask']
+
+        padded_batch = {'input_ids': input_ids,
+                        'token_type_ids': token_type_ids,
+                        'attention_masks': attention_masks,
+                        'labels': labels}
+
+        # TODO verify that batches are indeed of variable seq length
+
+        return padded_batch
 
     def setup(self, stage=None):
 
         if stage == 'fit':
 
-            print('\nBuilding train pool..')
+            print('\nBuilding train pool..', flush=True)
             if self.train is None:
-                self.train = DataPool(input_dir=self.input_dir,
-                                      datasets=self.datasets,
-                                      seed_size=self.seed_size,
-                                      split='train',
-                                      max_length=self.max_length)
+                self.train = DataPool(config=self.config,
+                                      split='train', )
 
-            print('\nBuilding dev and test sets..')
+            print('\nBuilding dev and test sets..', flush=True)
             if self.val is None:
-                self.val = DataPool(input_dir=self.input_dir,
-                                    datasets=self.datasets,
-                                    seed_size=self.seed_size,
-                                    split='dev',
-                                    max_length=self.max_length)
+                self.val = DataPool(config=self.config,
+                                    split='dev')
             if self.test is None:
-                self.test = DataPool(input_dir=self.input_dir,
-                                     datasets=self.datasets,
-                                     seed_size=self.seed_size,
-                                     split='test',
-                                     max_length=self.max_length)
+                self.test = DataPool(config=self.config,
+                                     split='test')
 
         if stage == 'test':
             pass
 
-        print('Done building datasets!\nFitting model on initial seed dataset L..')
+        print('Done building datasets!\nFitting model on initial seed dataset L..', flush=True)
 
     def train_dataloader(self):
 
-        return DataLoader(self.train, shuffle=True, batch_size=self.batch_size, num_workers=self.num_workers)
+        return DataLoader(self.train,
+                          collate_fn=self.batch_tokenize,
+                          shuffle=True,
+                          batch_size=self.config.batch_size,
+                          num_workers=self.config.num_workers)
 
     def val_dataloader(self):
 
-        return DataLoader(self.val, shuffle=False, batch_size=self.batch_size, num_workers=self.num_workers)
+        return DataLoader(self.val,
+                          collate_fn=self.batch_tokenize,
+                          shuffle=False,
+                          batch_size=self.config.batch_size,
+                          num_workers=self.config.num_workers)
 
     def test_dataloader(self):
 
-        return DataLoader(self.test, shuffle=False, batch_size=self.batch_size, num_workers=self.num_workers)
+        return DataLoader(self.test,
+                          shuffle=False,
+                          collate_fn=self.batch_tokenize,
+                          batch_size=self.config.batch_size,
+                          num_workers=self.config.num_workers)

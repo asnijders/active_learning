@@ -68,12 +68,13 @@ class LeastConfidence(AcquisitionFunction):
         model.eval()
 
         dataloader = DataLoader(dataset=dm.train,
+                                collate_fn=dm.batch_tokenize,
                                 batch_size=config.batch_size,
                                 shuffle=False,
                                 num_workers=config.num_workers)
 
         # loop over unlabelled data and store probabilities
-        for i, batch in tqdm(enumerate(dataloader)):
+        for i, batch in enumerate(dataloader):
 
             outputs = model.active_step(batch=batch,
                                         batch_idx=i)
@@ -113,6 +114,7 @@ class MaxEntropy(AcquisitionFunction):
 
         # create dataloader for unlabeled data
         dataloader = DataLoader(dataset=dm.train,
+                                collate_fn=dm.batch_tokenize,
                                 batch_size=config.batch_size,
                                 shuffle=False,
                                 num_workers=config.num_workers)
@@ -123,7 +125,7 @@ class MaxEntropy(AcquisitionFunction):
             model.eval()
 
             # loop over unlabelled data and store probabilities
-            for i, batch in tqdm(enumerate(dataloader)):
+            for i, batch in enumerate(dataloader):
 
                 outputs = model.active_step(batch=batch,  # pass batch through model
                                             batch_idx=i)
@@ -147,7 +149,7 @@ class MaxEntropy(AcquisitionFunction):
         elif self.mode == 'mc-entropy':
 
             # loop over unlabelled data and store probabilities
-            for i, batch in tqdm(enumerate(dataloader)):
+            for i, batch in enumerate(dataloader):
 
                 batch_probabilities = []
                 for _ in range(dropout_k):  # perform k passes per batch to obtain k MC samples of prob dists
@@ -187,12 +189,13 @@ class BALD(AcquisitionFunction):
 
         # create dataloader for unlabeled data
         dataloader = DataLoader(dataset=dm.train,
+                                collate_fn=dm.batch_tokenize,
                                 batch_size=config.batch_size,
                                 shuffle=False,
                                 num_workers=config.num_workers)
 
         # loop over unlabelled data and store probabilities
-        for i, batch in tqdm(enumerate(dataloader)):
+        for i, batch in enumerate(dataloader):
 
             probabilities, disagreement = [], []
             for _ in range(dropout_k):  # perform k passes per batch to obtain k MC samples of prob dists
@@ -235,6 +238,7 @@ class Coreset(AcquisitionFunction):
         unlabeled_dataset = dm.train
         # create dataloader for unlabeled data
         unlab_loader = DataLoader(dataset=unlabeled_dataset,
+                                  collate_fn=dm.batch_tokenize,
                                   batch_size=config.batch_size,
                                   shuffle=False,
                                   num_workers=config.num_workers)
@@ -244,6 +248,7 @@ class Coreset(AcquisitionFunction):
         labeled_dataset.set_mode('L')
         # create dataloader for labeled data
         lab_loader = DataLoader(dataset=labeled_dataset,
+                                collate_fn=dm.batch_tokenize,
                                 batch_size=config.batch_size,
                                 shuffle=False,
                                 num_workers=config.num_workers)
@@ -257,7 +262,7 @@ class Coreset(AcquisitionFunction):
             encoder.eval()
 
             with torch.no_grad():
-                for i, batch in tqdm(enumerate(loader)):
+                for i, batch in enumerate(loader):
 
                     output = encoder.active_step(batch=batch,
                                                  batch_idx=i)

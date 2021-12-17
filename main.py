@@ -9,7 +9,6 @@ import wandb
 import torch
 from torch.cuda import device_count
 from pytorch_lightning import Trainer
-from pytorch_lightning import loggers as pl_loggers
 from pytorch_lightning import seed_everything
 from pytorch_lightning.loggers import WandbLogger
 
@@ -24,6 +23,8 @@ import logging
 warnings.filterwarnings("ignore", ".*does not have many workers.*")
 wandb.login()
 
+import sys
+
 
 def main(args):
 
@@ -37,14 +38,12 @@ def main(args):
     if config.debug: # This mode turns on more detailed torch error descriptions
         torch.autograd.set_detect_anomaly(True)
 
+    if config.toy_run != 1.0:
+        print('\nNOTE: TOY RUN - ONLY USING {}% OF DATA\n'.format(config.toy_run*100), flush=True)
+
     # --------------------------------------- Active learning: Seed phase ---------------------------------------------
     # Build datamodule
-    dm = GenericDataModule(datasets=config.datasets,
-                           seed_size=config.seed_size,
-                           max_length=config.max_length,
-                           batch_size=config.batch_size,
-                           num_workers=config.num_workers,
-                           input_dir=config.input_dir)
+    dm = GenericDataModule(config=config)
     dm.prepare_data()
     # dm.setup(stage="fit")
 
@@ -62,13 +61,16 @@ def main(args):
                            accelerator=config.accelerator,
                            max_epochs=config.max_epochs,
                            enable_model_summary=False,
-                           limit_val_batches=1,
-                           num_sanity_val_steps=1)
+                           progress_bar_refresh_rate=config.refresh_rate,
+                           limit_val_batches=config.toy_run,
+                           limit_train_batches=config.toy_run,
+                           limit_test_batches=config.toy_run)
 
     # Fine-tune model on initial seed set
+    print('Fine-tuning model on initial seed..', flush=True)
     seed_trainer.fit(model, dm)
     wandb.finish()
-    print('Finished fine-tuning model on initial seed!')
+    print('Finished fine-tuning model on initial seed!', flush=True)
 
     # --------------------------------------- Pool-based active learning ---------------------------------------------
 
@@ -85,13 +87,16 @@ def main(args):
                              log_every_n_steps=config.log_every,
                              accelerator=config.accelerator,
                              max_epochs=config.max_epochs,
-                             limit_val_batches=1,
-                             enable_model_summary=False)
+                             limit_val_batches=config.toy_run,
+                             limit_train_batches=config.toy_run,
+                             limit_test_batches=config.toy_run,
+                             enable_model_summary=False,
+                             progress_bar_refresh_rate=config.refresh_rate)
 
     # start acquisition loop
     for i in range(config.iterations):
 
-        print('Active Learning iteration: {}'.format(i+1))
+        print('Active Learning iteration: {}'.format(i+1), flush=True)
 
         # set training dataset mode to access the unlabelled data
         dm.train.set_mode('U')
@@ -163,7 +168,7 @@ if __name__ == '__main__':
                         help='learning rate')
     parser.add_argument('--dropout', default=0.3, type=float,
                         help='hidden layer dropout prob')
-    parser.add_argument('--max_length', default=180, type=int, #TODO make sure this param is set appropriately
+    parser.add_argument('--max_length', default=350, type=int, #TODO make sure this param is set appropriately
                         help='max no of tokens for tokenizer (default is enough for all tasks')
 
     # Lightning Trainer args
@@ -173,7 +178,7 @@ if __name__ == '__main__':
     accelerator = None if device_count() > 0 else None
     parser.add_argument('--accelerator', default=accelerator)
 
-    num_workers = os.cpu_count() if device_count() > 0 else 1 # TODO this may or may not lead to some speed bottlenecks
+    num_workers = 3 if device_count() > 0 else 1 # TODO this may or may not lead to some speed bottlenecks
     parser.add_argument('--num_workers', default=num_workers, type=int,
                         help='no. of workers for DataLoaders')
 
@@ -184,8 +189,10 @@ if __name__ == '__main__':
     # Auxiliary args
     parser.add_argument('--debug', default=True, type=bool,
                         help='toggle elaborate torch errors')
-    parser.add_argument('--toy_run', default=1, type=int,
-                        help='set no of batches per datasplit per epoch (helpful for debugging)')
+    parser.add_argument('--toy_run', default=1.00, type=int,
+                        help='proportion of batches used in train/dev/test phase (useful for debugging)')
+    parser.add_argument('--refresh_rate', default=100, type=int,
+                        help='how often to refresh progress bar (in steps)')
     config = parser.parse_args()
 
     main(config)
