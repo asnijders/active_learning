@@ -25,6 +25,17 @@ wandb.login()
 
 import sys
 
+# def set_iterations(config, dm):
+#
+#     num_unlabelled = len(dm.train.U)
+#
+#     if 0 < config.labelling_batch_size < 1:
+#
+#         num_iterations = (1 - config.seed_size) / config.labelling_batch_size
+#
+#     return num_iterations
+
+
 
 def main(args):
 
@@ -80,9 +91,6 @@ def main(args):
     # TODO: abstract this code away into an active learner class
     print('\nStarting Active Learning process with strategy: {}'.format(config.acquisition_fn))
 
-    # initialise acquisition function
-    acquisition_fn = select_acquisition_fn(config.acquisition_fn)
-
     # define new trainer and logger specific to active learning phase
     active_logger = WandbLogger(project="active_learning_iter",
                                 save_dir=config.output_dir,
@@ -99,9 +107,13 @@ def main(args):
                              enable_model_summary=False,
                              progress_bar_refresh_rate=config.refresh_rate)
 
+    # initialise acquisition function
+    acquisition_fn = select_acquisition_fn(fn_id=config.acquisition_fn)
+
     # start acquisition loop
     for i in range(config.iterations):
 
+        # TODO add some flag for when self.U is empty such that AL is stopped automatically
         print('Active Learning iteration: {}'.format(i+1), flush=True)
 
         # set training dataset mode to access the unlabelled data
@@ -154,13 +166,15 @@ if __name__ == '__main__':
                         help='specifies which transformer is used for encoding sentence pairs')
 
     # Active Learning args
+    parser.add_argument('--downsample_rate', default=1.00, type=float,  # TODO change this to percentage of dataset size later
+                        help='specifies fraction of data used for training')
     parser.add_argument('--seed_size', default=0.10, type=float, # TODO change this to percentage of dataset size later
                         help='specifies size of seed dataset')
     parser.add_argument('--acquisition_fn', default='coreset', type=str,
                         help='specifies which acquisition function is used for pool-based active learning')
-    parser.add_argument('--iterations', default=5, type=int,
+    parser.add_argument('--iterations', default=20, type=int,
                         help='specifies number of active learning iterations')
-    parser.add_argument('--labelling_batch_size', default=10, type=int, #TODO change this to percentage of dataset size
+    parser.add_argument('--labelling_batch_size', default=0.10, type=float, #TODO change this to percentage of dataset size
                         help='specifies how many new instances will be labelled per AL iteration')
 
     # Training args
@@ -195,7 +209,7 @@ if __name__ == '__main__':
     # Auxiliary args
     parser.add_argument('--debug', default=True, type=bool,
                         help='toggle elaborate torch errors')
-    parser.add_argument('--toy_run', default=1.00, type=int,
+    parser.add_argument('--toy_run', default=1.00, type=float,
                         help='proportion of batches used in train/dev/test phase (useful for debugging)')
     parser.add_argument('--refresh_rate', default=100, type=int,
                         help='how often to refresh progress bar (in steps)')

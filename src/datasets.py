@@ -17,7 +17,21 @@ import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
-def read_dataset(input_dir, dataset_id, split):
+def downsample(dataset, dataset_id, downsample_rate):
+    """
+    This function takes a dataframe and downsamples it according to a provided percentage
+    :return: downsampled dataframe
+    """
+
+    size_old = len(dataset)
+    sample_size = downsample_rate * size_old
+    print(f"{'Down-sampling {}% from {}:'.format(100*downsample_rate, dataset_id):<30}"
+          f"{'from {} to {} examples'.format(size_old, sample_size):<32}", flush=True)
+
+    return dataset.sample(sample_size)
+
+
+def read_dataset(input_dir, dataset_id, split, downsample_rate):
     """
     This function takes a dataset id and reads the corresponding .json split in an appropriate Pandas DataFrame
     :param input_dir:
@@ -69,12 +83,20 @@ def read_dataset(input_dir, dataset_id, split):
 
     # ensure consistent headers per dataset DataFrame
     dataset.columns = ['Premise', 'Hypothesis', 'Label', 'ID']
+
+    if 0 < downsample_rate < 1.0:
+
+        dataset = downsample(dataset,
+                             dataset_id,
+                             downsample_rate)
+
     print(f"{'{} {} size:'.format(dataset_id, split):<30}{len(dataset):<32}", flush=True)
+
 
     return dataset
 
 
-def combine_datasets(input_dir, datasets, split):
+def combine_datasets(input_dir, datasets, split, downsample_rate):
     """
     This function takes a list of NLI dataset names and
     concatenates all examples from each corresponding dataset
@@ -88,7 +110,7 @@ def combine_datasets(input_dir, datasets, split):
 
     # If we only consider a single dataset, we can just read and return it
     if len(datasets) == 1:
-        return read_dataset(input_dir, datasets[0], split)
+        return read_dataset(input_dir, datasets[0], split, downsample_rate)
 
     # If we consider multiple datasets we have to combine them into a single dataset
 
@@ -97,7 +119,7 @@ def combine_datasets(input_dir, datasets, split):
 
     # 2. load individual datasets and append to list
     for dataset_id in datasets:
-        dataset = read_dataset(input_dir, dataset_id, split)
+        dataset = read_dataset(input_dir, dataset_id, split, downsample_rate)
 
         # 3. add dataset to multi-dataset
         dataset_list.append(dataset)
@@ -136,13 +158,14 @@ class DataPool(Dataset):
         self.input_dir = config.input_dir
         self.datasets = config.datasets
         self.seed_size = config.seed_size
+        self.downsample_rate = config.downsample_rate
         self.max_length = config.max_length
         self.model_id = config.model_id
 
         if split == 'train':
 
             # first, we combine multiple NLI datasets into a single dataset and compile them in unlabeled pool U
-            self.U = combine_datasets(self.input_dir, self.datasets, split)
+            self.U = combine_datasets(self.input_dir, self.datasets, split, self.downsample_rate)
 
             # TODO add a downsampling mechanism here
             # if self.downsample is True:
@@ -151,7 +174,7 @@ class DataPool(Dataset):
 
         else:
 
-            self.L = combine_datasets(self.input_dir, self.datasets, split)
+            self.L = combine_datasets(self.input_dir, self.datasets, split, self.downsample_rate)
 
         self.data = self.L
         self.label2id = {"entailment": 0,

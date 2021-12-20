@@ -1,11 +1,11 @@
 #!/bin/bash
 
-#SBATCH --partition=gpu_short
+#SBATCH --partition=gpu_shared
 #SBATCH --gres=gpu:1
 #SBATCH --job-name=test
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=3
-#SBATCH --time=00:03:00
+#SBATCH --time=01:00:00
 #SBATCH --mem=32000M
 #SBATCH --output=slurm/output_%A.out
 
@@ -27,6 +27,6 @@ cd $HOME/active_learning
 source activate active
 
 # Run your code
-srun python main.py --input_dir "$TMPDIR/ard_data" --output_dir "$TMPDIR/ard_output_dir" --toy_run=0.01
+srun python main.py --input_dir "$TMPDIR/ard_data" --output_dir "$TMPDIR/ard_output_dir" --downsample_rate=0.01
 
 cp -r "$TMPDIR"/ard_output_dir $HOME/active_learning/results

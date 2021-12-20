@@ -45,6 +45,8 @@ class RandomSampler(AcquisitionFunction):
 
     def acquire_instances(self, config, model, dm, k):
 
+        # obtain desired proportion
+        k = dm.train.set_k(k)
         k_random_indices = np.random.randint(low=0,
                                              high=len(dm.train.U),
                                              size=k)
@@ -61,6 +63,10 @@ class LeastConfidence(AcquisitionFunction):
         """
         This function implements least-confidence acquisition
         """
+
+        # obtain desired proportion
+        k = dm.train.set_k(k)
+
         # keep track of most probable label probabilities
         max_probabilities = []
 
@@ -108,6 +114,9 @@ class MaxEntropy(AcquisitionFunction):
         """
         This function implements entropy uncertainty sampling acquisition
         """
+
+        # obtain desired proportion
+        k = dm.train.set_k(k)
 
         # keep track of most probable label probabilities
         max_entropies = []
@@ -184,6 +193,9 @@ class BALD(AcquisitionFunction):
         This function implements entropy uncertainty sampling acquisition
         """
 
+        # obtain desired proportion
+        k = dm.train.set_k(k)
+
         # keep track of most probable label probabilities
         informations = []
 
@@ -232,6 +244,9 @@ class Coreset(AcquisitionFunction):
         super().__init__()
 
     def acquire_instances(self, config, model, dm, k, dropout_k=10):
+
+        # obtain desired proportion
+        k = dm.train.set_k(k)
 
         # create separate dataset objects for labeled and unlabeled data
         # set unlabelled dm to unlabelled_dataset
