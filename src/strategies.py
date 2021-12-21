@@ -45,11 +45,9 @@ class RandomSampler(AcquisitionFunction):
 
     def acquire_instances(self, config, model, dm, k):
 
-        # obtain desired proportion
-        k = dm.train.set_k(k)
-        k_random_indices = np.random.randint(low=0,
-                                             high=len(dm.train.U),
-                                             size=k)
+        k_random_indices = np.random.choice(a=len(dm.train.U),
+                                            size=int(k),
+                                            replace=False)
 
         return k_random_indices
 
@@ -65,7 +63,7 @@ class LeastConfidence(AcquisitionFunction):
         """
 
         # obtain desired proportion
-        k = dm.train.set_k(k)
+        # k = dm.train.set_k(k)
 
         # keep track of most probable label probabilities
         max_probabilities = []
@@ -116,7 +114,7 @@ class MaxEntropy(AcquisitionFunction):
         """
 
         # obtain desired proportion
-        k = dm.train.set_k(k)
+        # k = dm.train.set_k(k)
 
         # keep track of most probable label probabilities
         max_entropies = []
@@ -194,7 +192,7 @@ class BALD(AcquisitionFunction):
         """
 
         # obtain desired proportion
-        k = dm.train.set_k(k)
+        # k = dm.train.set_k(k)
 
         # keep track of most probable label probabilities
         informations = []
@@ -246,7 +244,7 @@ class Coreset(AcquisitionFunction):
     def acquire_instances(self, config, model, dm, k, dropout_k=10):
 
         # obtain desired proportion
-        k = dm.train.set_k(k)
+        # k = dm.train.set_k(k)
 
         # create separate dataset objects for labeled and unlabeled data
         # set unlabelled dm to unlabelled_dataset
@@ -326,7 +324,7 @@ def select_acquisition_fn(fn_id):
     """
     acquisition_fn = None
 
-    if fn_id == 'random-sampler':
+    if fn_id == 'random':
         acquisition_fn = RandomSampler()
 
     elif fn_id == 'least-confidence':

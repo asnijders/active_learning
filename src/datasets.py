@@ -10,7 +10,7 @@ import pytorch_lightning as pl
 from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer
 from transformers import DataCollatorWithPadding
-
+import sys
 import numpy as np
 import os
 
@@ -24,9 +24,9 @@ def downsample(dataset, dataset_id, downsample_rate):
     """
 
     size_old = len(dataset)
-    sample_size = downsample_rate * size_old
-    print(f"{'Down-sampling {}% from {}:'.format(100*downsample_rate, dataset_id):<30}"
-          f"{'from {} to {} examples'.format(size_old, sample_size):<32}", flush=True)
+    sample_size = int(downsample_rate * size_old)
+    # print(f"{'Down-sampling {}% from {}:'.format(100*downsample_rate, dataset_id):<30}"
+    #       f"{'from {} to {} examples'.format(size_old, sample_size):<32}", flush=True)
 
     return dataset.sample(sample_size)
 
@@ -39,8 +39,6 @@ def read_dataset(input_dir, dataset_id, split, downsample_rate):
     :param split: str indicating which split should be read
     :return: DataFrame with examples (Premise, Hypothesis, Label, ID)
     """
-
-    # TODO implement the above logic for MNLI, FEVER, ETC!
 
     def replace_labels(label):
         label_conversions = {'e': 'entailment',
@@ -84,14 +82,13 @@ def read_dataset(input_dir, dataset_id, split, downsample_rate):
     # ensure consistent headers per dataset DataFrame
     dataset.columns = ['Premise', 'Hypothesis', 'Label', 'ID']
 
+    # downsample dataset if required
     if 0 < downsample_rate < 1.0:
-
         dataset = downsample(dataset,
                              dataset_id,
                              downsample_rate)
 
     print(f"{'{} {} size:'.format(dataset_id, split):<30}{len(dataset):<32}", flush=True)
-
 
     return dataset
 
@@ -102,6 +99,7 @@ def combine_datasets(input_dir, datasets, split, downsample_rate):
     concatenates all examples from each corresponding dataset
     for the provided data split (train/dev/test) into a single multi-dataset.
 
+    :param downsample_rate:
     :param input_dir:
     :param datasets: list with dataset names
     :param split: string indicating data split of interest
@@ -152,9 +150,6 @@ class DataPool(Dataset):
         # create single multi-dataset for desired data split (train, dev or test)
         # for the training split, we consider all examples as unlabelled and start training with a seed set L
 
-        # TODO: add a unique ID to each example in the unlabelled pool,
-        #  _just_ after creating the full dataframes. Then we can use that as an extra check for duplicates
-
         self.input_dir = config.input_dir
         self.datasets = config.datasets
         self.seed_size = config.seed_size
@@ -167,10 +162,9 @@ class DataPool(Dataset):
             # first, we combine multiple NLI datasets into a single dataset and compile them in unlabeled pool U
             self.U = combine_datasets(self.input_dir, self.datasets, split, self.downsample_rate)
 
-            # TODO add a downsampling mechanism here
-            # if self.downsample is True:
-
             self.L = self.label_instances_randomly(k=self.seed_size)
+
+            self.total_size = len(self.U) + len(self.L)
 
         else:
 
@@ -182,9 +176,18 @@ class DataPool(Dataset):
                          "neutral": 2}
 
     def __len__(self):
-        return len(self.L)
+        return len(self.data)
 
     def __getitem__(self, idx):
+
+        def catch_index_error(index):
+            try:
+                self.data.iloc[index]
+            except IndexError:
+                print(index, flush=True)
+                sys.exit()
+
+        catch_index_error(index=idx)
 
         if torch.is_tensor(idx):
             idx = idx.tolist()
@@ -245,7 +248,7 @@ class DataPool(Dataset):
         k = self.set_k(k)
         self.U = self.U.reset_index(drop=True)
 
-        print('Drawing {} random samples from unlabelled set U for seed set L..'.format(k), flush=True)
+        print('Drawing {} random samples from unlabelled set U for labelled seed set L..'.format(k), flush=True)
 
         # initialize empty seed dataset L
         L = pd.DataFrame(columns=self.U.columns)
@@ -254,6 +257,10 @@ class DataPool(Dataset):
         random_indices = list(np.random.randint(low=0,
                                                 high=len(self.U),
                                                 size=k))
+
+        random_indices = list(np.random.choice(a=len(self.U),
+                                               size=int(k),
+                                               replace=False))
 
         labelled_examples = self.U.iloc[random_indices]
         L = L.append(labelled_examples).reset_index(drop=True)
@@ -274,23 +281,34 @@ class DataPool(Dataset):
         # TODO: can I come up with a nice mechanism for making sure that no mistakes are made when moving samples
         # TODO: from the labeled to unlabeled sets?
 
+        if len(indices) > len(self.U):
+            indices = indices[:len(self.U)]
+
         new_examples = self.U.iloc[indices]  # Take examples from unlabelled pool
         self.L = self.L.append(new_examples).reset_index(drop=True)  # Add them to the labelled pool
         self.U = self.U.drop(new_examples.index).reset_index(drop=True)  # Remove examples from unlabelled pool
-        self.assert_disjoint()  # check whether U and L are disjoint
+        self.assert_validity()  # check whether U and L are disjoint and whether all indices are unique
         print('Labelled {} new instances'.format(len(new_examples)), flush=True)
         print(f"{'Total size unlabelled pool:':<30}{len(self.U):<32}", flush=True)
         print(f"{'Total size labelled pool:':<30}{len(self.L):<32}", flush=True)
 
         return None
 
-    def assert_disjoint(self):
+    def assert_validity(self):
         """
         re-usable function for ensuring that U and L do not overlap
         """
+        # assert that U and L are disjoint
         unlabelled_indices = set(self.U.ID.tolist())
         labelled_indices = set(self.L.ID.tolist())
         assert unlabelled_indices.isdisjoint(labelled_indices)
+
+        # assert that both U and L have only unique indices
+        assert len(self.U) == len(set(self.U.ID.tolist()))
+        assert len(self.L) == len(set(self.L.ID.tolist()))
+
+        # assert that both datasets still add up to original no. of examples
+        assert len(self.U) + len(self.L) == self.total_size
         return None
 
 
@@ -392,3 +410,24 @@ class GenericDataModule(pl.LightningDataModule):
                           collate_fn=self.batch_tokenize,
                           batch_size=self.config.batch_size,
                           num_workers=self.config.num_workers)
+
+    def active_dataloader(self):
+
+        return DataLoader(self.train,
+                          collate_fn=self.batch_tokenize,
+                          shuffle=True,
+                          batch_size=self.config.batch_size,
+                          num_workers=self.config.num_workers)
+
+    def has_unlabelled_data(self):
+        return len(self.train.U) > 0
+
+    def has_labelled_data(self):
+        return len(self.train.L) > 0
+
+    def label(self, indices):
+        self.train.label_indices(indices)
+
+    def dump_csv(self):
+        raise NotImplementedError
+

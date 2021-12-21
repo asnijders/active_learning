@@ -27,6 +27,6 @@ cd $HOME/active_learning
 source activate active
 
 # Run your code
-srun python main.py --input_dir "$TMPDIR/ard_data" --output_dir "$TMPDIR/ard_output_dir" --downsample_rate=0.01
+srun python main.py --input_dir "$TMPDIR/ard_data" --output_dir "$TMPDIR/ard_output_dir" --downsample_rate=0.20 --labelling_batch_size=0.10 --num_workers=3 --batch_size=16
 
 cp -r "$TMPDIR"/ard_output_dir $HOME/active_learning/results

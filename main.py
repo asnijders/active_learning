@@ -7,6 +7,7 @@ import wandb
 
 # PyTorch modules
 import torch
+import pytorch_lightning
 from torch.cuda import device_count
 from pytorch_lightning import Trainer
 from pytorch_lightning import seed_everything
@@ -16,24 +17,17 @@ from pytorch_lightning.loggers import WandbLogger
 from src.models import TransformerModel
 from src.datasets import GenericDataModule
 from src.strategies import select_acquisition_fn
+from src.loops import CustomFitLoop
 
 import warnings
 import logging
-# logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
+logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
+logging.getLogger("transformers").setLevel(logging.WARNING)
 warnings.filterwarnings("ignore", ".*does not have many workers.*")
+warnings.filterwarnings("ignore", "Some weights of the model checkpoint")
+os.environ["WANDB_SILENT"] = "true"
 wandb.login()
-
 import sys
-
-# def set_iterations(config, dm):
-#
-#     num_unlabelled = len(dm.train.U)
-#
-#     if 0 < config.labelling_batch_size < 1:
-#
-#         num_iterations = (1 - config.seed_size) / config.labelling_batch_size
-#
-#     return num_iterations
 
 
 
@@ -51,6 +45,8 @@ def main(args):
 
     if config.toy_run != 1.0:
         print('\nNOTE: TOY RUN - ONLY USING {}% OF DATA\n'.format(config.toy_run*100), flush=True)
+    if config.downsample_rate != 1.0:
+        print('\nNOTE: DOWN-SAMPLING - ONLY CONSIDERING {}% OF DATA\n'.format(config.downsample_rate * 100), flush=True)
 
     # --------------------------------------- Active learning: Seed phase ---------------------------------------------
     # Build datamodule
@@ -65,24 +61,26 @@ def main(args):
                              batch_size=config.batch_size)
 
     # initialise PL logging and trainer objects
-    seed_logger = WandbLogger(project="active_learning_seed",
-                              save_dir=config.output_dir,
-                              log_model=False)
+    logger = WandbLogger(project="active_learning_seed",
+                         save_dir=config.output_dir,
+                         log_model=False)
 
-    seed_trainer = Trainer(gpus=config.gpus,
-                           logger=seed_logger,
-                           log_every_n_steps=config.log_every,
-                           accelerator=config.accelerator,
-                           max_epochs=config.max_epochs,
-                           enable_model_summary=False,
-                           progress_bar_refresh_rate=config.refresh_rate,
-                           limit_val_batches=config.toy_run,
-                           limit_train_batches=config.toy_run,
-                           limit_test_batches=config.toy_run)
+    trainer = Trainer(gpus=config.gpus,
+                      logger=logger,
+                      log_every_n_steps=config.log_every,
+                      accelerator=config.accelerator,
+                      max_epochs=config.max_epochs,
+                      enable_checkpointing=False,
+                      enable_model_summary=False,
+                      limit_val_batches=config.toy_run,
+                      limit_train_batches=config.toy_run,
+                      limit_test_batches=config.toy_run,
+                      # progress_bar_refresh_rate=config.refresh_rate,
+                      enable_progress_bar=False)
 
     # Fine-tune model on initial seed set
     print('Fine-tuning model on initial seed..', flush=True)
-    seed_trainer.fit(model, dm)
+    trainer.fit(model, dm)
     wandb.finish()
     print('Finished fine-tuning model on initial seed!', flush=True)
 
@@ -92,44 +90,69 @@ def main(args):
     print('\nStarting Active Learning process with strategy: {}'.format(config.acquisition_fn))
 
     # define new trainer and logger specific to active learning phase
-    active_logger = WandbLogger(project="active_learning_iter",
-                                save_dir=config.output_dir,
-                                log_model=False)
+    logger = WandbLogger(project="active_learning_iter",
+                         save_dir=config.output_dir,
+                         log_model=False)
 
-    active_trainer = Trainer(gpus=config.gpus,
-                             logger=active_logger,
-                             log_every_n_steps=config.log_every,
-                             accelerator=config.accelerator,
-                             max_epochs=config.max_epochs,
-                             limit_val_batches=config.toy_run,
-                             limit_train_batches=config.toy_run,
-                             limit_test_batches=config.toy_run,
-                             enable_model_summary=False,
-                             progress_bar_refresh_rate=config.refresh_rate)
+    trainer = Trainer(gpus=config.gpus,
+                      logger=logger,
+                      log_every_n_steps=config.log_every,
+                      accelerator=config.accelerator,
+                      max_epochs=config.max_epochs,
+                      enable_checkpointing=False,
+                      limit_val_batches=config.toy_run,
+                      limit_train_batches=config.toy_run,
+                      limit_test_batches=config.toy_run,
+                      enable_model_summary=False,
+                      # progress_bar_refresh_rate=config.refresh_rate,
+                      enable_progress_bar=False)
 
-    # initialise acquisition function
-    acquisition_fn = select_acquisition_fn(fn_id=config.acquisition_fn)
+    # 3.2 Create the active learning loop and connect it to the trainer
+    config.labelling_batch_size = dm.train.set_k(config.labelling_batch_size)
+    trainer.fit_loop = CustomFitLoop(config=config,
+                                     label_epoch_frequency=1)
+
+    # 3.3 Finetune
+    trainer.fit(model, datamodule=dm)
+
+    sys.exit()
+
+
+
 
     # start acquisition loop
+    config.labelling_batch_size = dm.train.set_k(config.labelling_batch_size)
     for i in range(config.iterations):
 
         # TODO add some flag for when self.U is empty such that AL is stopped automatically
-        print('Active Learning iteration: {}'.format(i+1), flush=True)
+        print('Active Learning iteration: {}\n'.format(i+1), flush=True)
 
         # set training dataset mode to access the unlabelled data
         dm.train.set_mode('U')
 
+        # initialise acquisition function
+        acquisition_fn = select_acquisition_fn(fn_id=config.acquisition_fn)
+
         # acquire new examples for labelling
+        if len(dm.train.U) == 0:
+            print('All examples were labelled. Terminating Active Learning Loop...')
+            break
+
+        if config.labelling_batch_size > len(dm.train.U):
+            config.labelling_batch_size = len(dm.train.U)
+
         to_be_labelled = acquisition_fn.acquire_instances(config=config,
                                                           model=model,
                                                           dm=dm,
                                                           k=config.labelling_batch_size)
 
-        # label new instances and move from U to L
-        dm.train.label_instances(to_be_labelled)
+        dm.train.set_mode('L')  # re-set training dataset mode to access the labelled data
+        dm.train.label_instances(to_be_labelled)  # label new instances and move from U to L
 
-        # re-set training dataset mode to access the labelled data
-        dm.train.set_mode('L')
+        path = config.output_dir + '/L_round_{}.csv'.format(i)
+        dm.train.L.to_csv(path)
+        active_loader = dm.active_dataloader()
+        val_loader = dm.val_dataloader()
 
         # initialize a new model
         model = TransformerModel(model_id=config.model_id,
@@ -138,11 +161,13 @@ def main(args):
                                  batch_size=config.batch_size)
 
         # fine-tune model on updated labelled dataset L, from scratch
-        active_trainer.fit(model, dm)
+        print('\nFitting model on updated labelled pool, from scratch', flush=True)
+        trainer.fit(model, active_loader, val_loader)
+        print('Finished fitting model on updated pool!', flush=True)
 
     # run test set
     dm.setup(stage="test")
-    result = active_trainer.test(model=model,
+    result = trainer.test(model=model,
                           datamodule=dm)
 
 
@@ -158,28 +183,25 @@ if __name__ == '__main__':
                         help='specifies where on scratch disk output should be stored')
 
     # Program args
-    parser.add_argument('--seed', default=42, type=int,
-                        help='specifies global seed')
     parser.add_argument('--datasets', default=['ANLI', 'SNLI'], type=list,
                         help='list to specify nli datasets')
     parser.add_argument('--model_id', default='bert-base-uncased', type=str,
                         help='specifies which transformer is used for encoding sentence pairs')
-
-    # Active Learning args
-    parser.add_argument('--downsample_rate', default=1.00, type=float,  # TODO change this to percentage of dataset size later
-                        help='specifies fraction of data used for training')
-    parser.add_argument('--seed_size', default=0.10, type=float, # TODO change this to percentage of dataset size later
-                        help='specifies size of seed dataset')
-    parser.add_argument('--acquisition_fn', default='coreset', type=str,
+    parser.add_argument('--acquisition_fn', default='random', type=str,
                         help='specifies which acquisition function is used for pool-based active learning')
+    # Active Learning args
+    parser.add_argument('--downsample_rate', default=1.00, type=float,
+                        help='specifies fraction of data used for training')
+    parser.add_argument('--seed_size', default=0.10, type=float,
+                        help='specifies size of seed dataset')
+    parser.add_argument('--labelling_batch_size', default=0.10, type=float,
+                        help='specifies how many new instances will be labelled per AL iteration')
     parser.add_argument('--iterations', default=20, type=int,
                         help='specifies number of active learning iterations')
-    parser.add_argument('--labelling_batch_size', default=0.10, type=float, #TODO change this to percentage of dataset size
-                        help='specifies how many new instances will be labelled per AL iteration')
 
     # Training args
     # TODO make sure that we use appropriate training parameters for transformers
-    batch_size = 32 if device_count() > 0 else 4
+    batch_size = 16 if device_count() > 0 else 4 # TODO ik heb de batch size nu op 16 staan ipv 32 (?)
     parser.add_argument('--batch_size', default=batch_size, type=int,
                         help='no. of sentences sampled per pass')
     parser.add_argument('--max_epochs', default=1, type=int,
@@ -188,11 +210,11 @@ if __name__ == '__main__':
                         help='learning rate')
     parser.add_argument('--dropout', default=0.3, type=float,
                         help='hidden layer dropout prob')
-    parser.add_argument('--max_length', default=350, type=int, #TODO make sure this param is set appropriately
+    parser.add_argument('--max_length', default=350, type=int,
                         help='max no of tokens for tokenizer (default is enough for all tasks')
 
     # Lightning Trainer args
-    num_gpus = device_count() if device_count() > 0 else None # TODO update this value once everything work such that we can utilize all GPUs
+    num_gpus = device_count() if device_count() > 0 else None # TODO update this value once everything works such that we can utilize all GPUs
     parser.add_argument('--gpus', default=num_gpus)
 
     accelerator = None if device_count() > 0 else None
@@ -207,6 +229,8 @@ if __name__ == '__main__':
                         help='number of steps between loggings')
 
     # Auxiliary args
+    parser.add_argument('--seed', default=42, type=int,
+                        help='specifies global seed')
     parser.add_argument('--debug', default=True, type=bool,
                         help='toggle elaborate torch errors')
     parser.add_argument('--toy_run', default=1.00, type=float,

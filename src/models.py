@@ -47,6 +47,9 @@ class TransformerModel(LightningModule):
         self.valid_acc = torchmetrics.Accuracy()
         self.test_acc = torchmetrics.Accuracy()
 
+    def deconstruct(self):
+        self.encoder = None
+
     def configure_optimizers(self):
         "This method handles optimization of params for PyTorch lightning"
         return Adam(self.parameters(), lr=self.lr)
@@ -60,26 +63,6 @@ class TransformerModel(LightningModule):
                               output_hidden_states=True)
 
         return output
-
-    def tokenize_batch(self, batch):
-
-        premise = batch['premise']
-        hypothesis = batch['hypothesis']
-
-        tokenized_input_seq_pair = self.tokenizer.__call__(text=premise,
-                                                           text_pair=hypothesis,
-                                                           max_length=self.max_length,
-                                                           padding='longest',
-                                                           return_token_type_ids=True,
-                                                           truncation=True,
-                                                           return_attention_mask=True,
-                                                           return_tensors="pt")
-
-        input_ids = tokenized_input_seq_pair['input_ids'].squeeze(1)
-        token_type_ids = tokenized_input_seq_pair['token_type_ids'].squeeze(1)
-        attention_masks = tokenized_input_seq_pair['attention_mask'].squeeze(1)
-
-        return input_ids, token_type_ids, attention_masks
 
     def active_step(self, batch, batch_idx):
         """
