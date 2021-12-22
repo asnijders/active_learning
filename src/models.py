@@ -133,3 +133,7 @@ class TransformerModel(LightningModule):
         preds = outputs.logits
         acc = accuracy(preds, labels)
         return loss, acc
+
+    # def validation_epoch_end(self, outputs: EPOCH_OUTPUT) -> None:
+    #     wandb.log({'loss': 0.1, 'epoch': 1, 'batch': 3})
+    #     pass

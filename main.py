@@ -17,7 +17,7 @@ from pytorch_lightning.loggers import WandbLogger
 from src.models import TransformerModel
 from src.datasets import GenericDataModule
 from src.strategies import select_acquisition_fn
-from src.loops import CustomFitLoop
+from src.utils import log_results, generate_run_id
 
 import warnings
 import logging
@@ -51,8 +51,12 @@ def main(args):
     # --------------------------------------- Active learning: Seed phase ---------------------------------------------
     # Build datamodule
     dm = GenericDataModule(config=config)
-    dm.prepare_data()
-    # dm.setup(stage="fit")
+    dm.setup(stage='fit')
+
+    # init logger
+    group_id = str(config.downsample_rate) + '_' + config.acquisition_fn
+    wandb.init(group=group_id)
+    # wandb.run_name = generate_run_id(config)
 
     # initialise model
     model = TransformerModel(model_id=config.model_id,
@@ -61,7 +65,7 @@ def main(args):
                              batch_size=config.batch_size)
 
     # initialise PL logging and trainer objects
-    logger = WandbLogger(project="active_learning_seed",
+    logger = WandbLogger(project="active_learning",
                          save_dir=config.output_dir,
                          log_model=False)
 
@@ -79,20 +83,22 @@ def main(args):
                       enable_progress_bar=False)
 
     # Fine-tune model on initial seed set
-    print('Fine-tuning model on initial seed..', flush=True)
-    trainer.fit(model, dm)
-    wandb.finish()
+    print('\nFine-tuning model on initial seed..', flush=True)
+    seed_loader = dm.train_dataloader()  # create loader for labelled pool
+    trainer.fit(model, seed_loader)  # fit on labelled data
     print('Finished fine-tuning model on initial seed!', flush=True)
+    print('\nEvaluating fitted model on dev set..', flush=True)
+    val_loader = dm.val_dataloader()  # create loader for dev set
+    results = trainer.validate(model, val_loader)  # evaluate model on dev set
+    log_results(logger=wandb,
+                results=results,
+                dm=dm)  # log results
+    print('Finished evaluating model on dev set.', flush=True)
 
     # --------------------------------------- Pool-based active learning ---------------------------------------------
 
     # TODO: abstract this code away into an active learner class
     print('\nStarting Active Learning process with strategy: {}'.format(config.acquisition_fn))
-
-    # define new trainer and logger specific to active learning phase
-    logger = WandbLogger(project="active_learning_iter",
-                         save_dir=config.output_dir,
-                         log_model=False)
 
     trainer = Trainer(gpus=config.gpus,
                       logger=logger,
@@ -106,19 +112,6 @@ def main(args):
                       enable_model_summary=False,
                       # progress_bar_refresh_rate=config.refresh_rate,
                       enable_progress_bar=False)
-
-    # 3.2 Create the active learning loop and connect it to the trainer
-    config.labelling_batch_size = dm.train.set_k(config.labelling_batch_size)
-    trainer.fit_loop = CustomFitLoop(config=config,
-                                     label_epoch_frequency=1)
-
-    # 3.3 Finetune
-    trainer.fit(model, datamodule=dm)
-
-    sys.exit()
-
-
-
 
     # start acquisition loop
     config.labelling_batch_size = dm.train.set_k(config.labelling_batch_size)
@@ -146,11 +139,11 @@ def main(args):
                                                           dm=dm,
                                                           k=config.labelling_batch_size)
 
-        dm.train.set_mode('L')  # re-set training dataset mode to access the labelled data
         dm.train.label_instances(to_be_labelled)  # label new instances and move from U to L
 
-        path = config.output_dir + '/L_round_{}.csv'.format(i)
-        dm.train.L.to_csv(path)
+        # path = config.output_dir + '/L_round_{}.csv'.format(i)
+        # dm.train.L.to_csv(path)
+        dm.train.set_mode('L')  # re-set training dataset mode to access the labelled data
         active_loader = dm.active_dataloader()
         val_loader = dm.val_dataloader()
 
@@ -162,11 +155,16 @@ def main(args):
 
         # fine-tune model on updated labelled dataset L, from scratch
         print('\nFitting model on updated labelled pool, from scratch', flush=True)
-        trainer.fit(model, active_loader, val_loader)
-        print('Finished fitting model on updated pool!', flush=True)
+        trainer.fit(model, active_loader)
+        results = trainer.validate(model, val_loader)
+        log_results(logger=wandb,
+                    results=results,
+                    dm=dm)
+        # TODO: check if trainer.fit can return a dictionary of stats. then log those stats to an external logger
+        # TODO that's not integrated in the trainer object. then we can more easily log things to non-step axis
+        print('Finished fitting model on updated pool!\n', flush=True)
 
     # run test set
-    dm.setup(stage="test")
     result = trainer.test(model=model,
                           datamodule=dm)
 
@@ -176,19 +174,21 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 
     # Lisa args:
-
     parser.add_argument('--input_dir', default=None, type=str,
                         help='specifies where to read datasets from scratch disk')
     parser.add_argument('--output_dir', default=None, type=str,
                         help='specifies where on scratch disk output should be stored')
 
-    # Program args
+    # Experiment args
+    parser.add_argument('--seed', default=42, type=int,
+                        help='specifies global seed')
     parser.add_argument('--datasets', default=['ANLI', 'SNLI'], type=list,
                         help='list to specify nli datasets')
     parser.add_argument('--model_id', default='bert-base-uncased', type=str,
                         help='specifies which transformer is used for encoding sentence pairs')
-    parser.add_argument('--acquisition_fn', default='random', type=str,
+    parser.add_argument('--acquisition_fn', default='coreset', type=str,
                         help='specifies which acquisition function is used for pool-based active learning')
+
     # Active Learning args
     parser.add_argument('--downsample_rate', default=1.00, type=float,
                         help='specifies fraction of data used for training')
@@ -196,7 +196,7 @@ if __name__ == '__main__':
                         help='specifies size of seed dataset')
     parser.add_argument('--labelling_batch_size', default=0.10, type=float,
                         help='specifies how many new instances will be labelled per AL iteration')
-    parser.add_argument('--iterations', default=20, type=int,
+    parser.add_argument('--iterations', default=6, type=int,
                         help='specifies number of active learning iterations')
 
     # Training args
@@ -229,8 +229,6 @@ if __name__ == '__main__':
                         help='number of steps between loggings')
 
     # Auxiliary args
-    parser.add_argument('--seed', default=42, type=int,
-                        help='specifies global seed')
     parser.add_argument('--debug', default=True, type=bool,
                         help='toggle elaborate torch errors')
     parser.add_argument('--toy_run', default=1.00, type=float,

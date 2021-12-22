@@ -5,9 +5,10 @@
 #SBATCH --job-name=test
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=3
-#SBATCH --time=01:00:00
+#SBATCH --time=04:00:00
 #SBATCH --mem=32000M
-#SBATCH --output=slurm/output_%A.out
+#SBATCH --output=slurm/slurm_array_testing_%A_%a.out
+#SBATCH --array=1-5%1
 
 module purge
 module load 2021
@@ -17,7 +18,6 @@ cd $HOME/active_learning
 
 # copy all data from home folder to SCRATCH
 cp -r $HOME/active_learning/resources/. "$TMPDIR"
-
 # create folder on scratch disk to store output
 mkdir "$TMPDIR"/ard_output_dir
 
@@ -26,14 +26,15 @@ cd $HOME/active_learning
 # Activate your environment
 source activate active
 
+HPARAMS_FILE=$HOME/active_learning/jobs/hparams/array_job_hyperparameters.txt
+
 # Run your code
 srun python main.py \
             --input_dir "$TMPDIR/ard_data" \
             --output_dir "$TMPDIR/ard_output_dir" \
-            --downsample_rate=0.005 \
             --labelling_batch_size=0.10 \
             --num_workers=3 \
             --batch_size=16 \
-            --seed=42
+            $(head -$SLURM_ARRAY_TASK_ID $HPARAMS_FILE | tail -1)
 
 cp -r "$TMPDIR"/ard_output_dir $HOME/active_learning/results

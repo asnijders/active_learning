@@ -68,37 +68,38 @@ class LeastConfidence(AcquisitionFunction):
         # keep track of most probable label probabilities
         max_probabilities = []
 
-        # disable gradient tracking
-        model.eval()
-
         dataloader = DataLoader(dataset=dm.train,
                                 collate_fn=dm.batch_tokenize,
                                 batch_size=config.batch_size,
                                 shuffle=False,
                                 num_workers=config.num_workers)
+        with torch.no_grad():
 
-        # loop over unlabelled data and store probabilities
-        for i, batch in enumerate(dataloader):
+            # disable gradient tracking
+            model.eval()
 
-            outputs = model.active_step(batch=batch,
-                                        batch_idx=i)
-            logits = outputs.logits
-            probabilities, _ = torch.max(torch.softmax(logits, dim=1), dim=1)
-            probabilities = probabilities.detach().cpu().numpy()
-            probabilities = list(probabilities)
-            max_probabilities.extend(probabilities)
+            # loop over unlabelled data and store probabilities
+            for i, batch in enumerate(dataloader):
 
-            #  TODO remove this once done with debugging
-            if i == 0:
-                break
+                outputs = model.active_step(batch=batch,
+                                            batch_idx=i)
+                logits = outputs.logits
+                probabilities, _ = torch.max(torch.softmax(logits, dim=1), dim=1)
+                probabilities = probabilities.detach().cpu().numpy()
+                probabilities = list(probabilities)
+                max_probabilities.extend(probabilities)
 
-        # select the k examples with the largest gap between 1 and the most probable label probability
-        # TODO fix this function
-        probability_gap = 1 - np.array(max_probabilities)
-        least_confident_indices = np.argsort(probability_gap)[:k][::-1]
+                #  TODO remove this once done with debugging
+                if i == 0:
+                    break
 
-        # re-enable grad computation
-        model.train()
+            # select the k examples with the largest gap between 1 and the most probable label probability
+            # TODO fix this function
+            probability_gap = 1 - np.array(max_probabilities)
+            least_confident_indices = np.argsort(probability_gap)[:k][::-1]
+
+            # re-enable grad computation
+            model.train()
 
         return least_confident_indices
 
@@ -120,6 +121,7 @@ class MaxEntropy(AcquisitionFunction):
         max_entropies = []
 
         # create dataloader for unlabeled data
+        dm.train.set_mode('U')
         dataloader = DataLoader(dataset=dm.train,
                                 collate_fn=dm.batch_tokenize,
                                 batch_size=config.batch_size,
@@ -128,52 +130,56 @@ class MaxEntropy(AcquisitionFunction):
 
         if self.mode == 'entropy':
 
-            # disable gradient tracking
-            model.eval()
+            with torch.no_grad():
 
-            # loop over unlabelled data and store probabilities
-            for i, batch in enumerate(dataloader):
+                # disable gradient tracking
+                model.eval()
 
-                outputs = model.active_step(batch=batch,  # pass batch through model
-                                            batch_idx=i)
-                logits = outputs.logits  # extract logits
-                probabilities = torch.softmax(logits, dim=1).detach().cpu().numpy()  # obtain prob dist over labs
-                entropies = entropy(probabilities, axis=1)  # compute entropy of prob dist per example
-                entropies = list(entropies)
-                max_entropies.extend(entropies)
+                # loop over unlabelled data and store probabilities
+                for i, batch in enumerate(dataloader):
 
-                #  TODO remove this once done with debugging
-                if i == 0:
-                    break
+                    outputs = model.active_step(batch=batch,  # pass batch through model
+                                                batch_idx=i)
+                    logits = outputs.logits  # extract logits
+                    probabilities = torch.softmax(logits, dim=1).detach().cpu().numpy()  # obtain prob dist over labs
+                    entropies = entropy(probabilities, axis=1)  # compute entropy of prob dist per example
+                    entropies = list(entropies)
+                    max_entropies.extend(entropies)
 
-            max_entropy_indices = np.argsort(max_entropies)[:k][::-1]
+                    #  TODO remove this once done with debugging
+                    if i == 0:
+                        break
 
-            # re-enable grad computation
-            model.train()
+                max_entropy_indices = np.argsort(max_entropies)[:k][::-1]
+
+                # re-enable grad computation
+                model.train()
 
             return max_entropy_indices
 
         elif self.mode == 'mc-entropy':
 
-            # loop over unlabelled data and store probabilities
-            for i, batch in enumerate(dataloader):
+            with torch.no_grad():
 
-                batch_probabilities = []
-                for _ in range(dropout_k):  # perform k passes per batch to obtain k MC samples of prob dists
+                # loop over unlabelled data and store probabilities
+                for i, batch in enumerate(dataloader):
 
-                    outputs = model.active_step(batch=batch,  # pass batch through model
-                                                batch_idx=i)
-                    logits = outputs.logits  # extract logits
-                    probability = torch.softmax(logits, dim=1).detach().cpu().numpy()  # obtain prob dist over labels
-                    batch_probabilities.append(probability)
+                    batch_probabilities = []
+                    for _ in range(dropout_k):  # perform k passes per batch to obtain k MC samples of prob dists
 
-                batch_probabilities = np.mean(batch_probabilities, axis=0)  # compute mean probabilities over k samples
-                entropies = entropy(batch_probabilities, axis=1)  # compute entropy over mean prob dists
-                max_entropies.extend(entropies)  # store entropies
+                        outputs = model.active_step(batch=batch,  # pass batch through model
+                                                    batch_idx=i)
+                        logits = outputs.logits  # extract logits
+                        probability = torch.softmax(logits, dim=1).detach().cpu().numpy()  # obtain prob dist over labels
+                        batch_probabilities.append(probability)
 
-                #  TODO remove this once done with debugging
-                if i == 0:
-                    break
+                    batch_probabilities = np.mean(batch_probabilities, axis=0)  # compute mean probabilities over k samples
+                    entropies = entropy(batch_probabilities, axis=1)  # compute entropy over mean prob dists
+                    max_entropies.extend(entropies)  # store entropies
+
+                    #  TODO remove this once done with debugging
+                    if i == 0:
+                        break
 
             # normalize entropies
             max_entropies /= np.sum(max_entropies)
@@ -204,34 +210,32 @@ class BALD(AcquisitionFunction):
                                 shuffle=False,
                                 num_workers=config.num_workers)
 
-        # loop over unlabelled data and store probabilities
-        for i, batch in enumerate(dataloader):
+        with torch.no_grad():
 
-            probabilities, disagreement = [], []
-            for _ in range(dropout_k):  # perform k passes per batch to obtain k MC samples of prob dists
+            # loop over unlabelled data and store probabilities
+            for i, batch in enumerate(dataloader):
 
-                outputs = model.active_step(batch=batch,  # pass batch through model
-                                            batch_idx=i)
+                probabilities, disagreement = [], []
+                for _ in range(dropout_k):  # perform k passes per batch to obtain k MC samples of prob dists
 
-                logits = outputs.logits  # extract logits
-                probability = torch.softmax(logits, dim=1).detach().cpu().numpy()  # obtain prob dist over labels
-                probabilities.append(probability)
-                disagreement.append(entropy(probability, axis=1))
+                    outputs = model.active_step(batch=batch,  # pass batch through model
+                                                batch_idx=i)
 
-            entropies = entropy(np.mean(probabilities, axis=0), axis=1)
-            disagreements = np.mean(disagreement, axis=0)
-            informations.extend(list(entropies-disagreements))
+                    logits = outputs.logits  # extract logits
+                    probability = torch.softmax(logits, dim=1).detach().cpu().numpy()  # obtain prob dist over labels
+                    probabilities.append(probability)
+                    disagreement.append(entropy(probability, axis=1))
 
-            #  TODO remove this once done with debugging
-            if i == 0:
-                break
+                entropies = entropy(np.mean(probabilities, axis=0), axis=1)
+                disagreements = np.mean(disagreement, axis=0)
+                informations.extend(list(entropies-disagreements))
+
+                #  TODO remove this once done with debugging
+                if i == 0:
+                    break
 
         # TODO ensure that we obtain the _top_ k instances (i.e. with maximum mutual info)
         bald_indices = np.argsort(informations)[:k][::-1]
-
-        print(informations)
-        print(bald_indices)
-        sys.exit()
 
         return bald_indices
 
@@ -275,6 +279,7 @@ class Coreset(AcquisitionFunction):
             encoder.eval()
 
             with torch.no_grad():
+
                 for i, batch in enumerate(loader):
 
                     output = encoder.active_step(batch=batch,
