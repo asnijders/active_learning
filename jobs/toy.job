@@ -30,10 +30,12 @@ source activate active
 srun python main.py \
             --input_dir "$TMPDIR/ard_data" \
             --output_dir "$TMPDIR/ard_output_dir" \
-            --downsample_rate=0.005 \
+            --downsample_rate=0.10 \
             --labelling_batch_size=0.10 \
             --num_workers=3 \
             --batch_size=16 \
-            --seed=42
+            --seed=42 \
+            --acquisition_fn=least-confidence
 
 cp -r "$TMPDIR"/ard_output_dir $HOME/active_learning/results
+

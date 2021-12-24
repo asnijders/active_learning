@@ -8,6 +8,7 @@ import argparse
 import sys
 import time
 import os
+import numpy as np
 
 # PyTorch modules
 import torch
@@ -17,8 +18,9 @@ import torchmetrics
 import transformers
 from transformers import AutoTokenizer
 from transformers import BertForSequenceClassification
-
+from scipy.stats import entropy
 from torchmetrics.functional import accuracy
+
 
 class TransformerModel(LightningModule):
     """
@@ -63,26 +65,6 @@ class TransformerModel(LightningModule):
                               output_hidden_states=True)
 
         return output
-
-    def active_step(self, batch, batch_idx):
-        """
-        step function for running the model on unlabelled data
-        :param batch:
-        :param batch_idx:
-        :return:
-        """
-
-        input_ids = batch['input_ids']
-        token_type_ids = batch['token_type_ids']
-        attention_masks = batch['attention_masks']
-        labels = batch['labels']
-
-        outputs = self(input_ids=input_ids,
-                       attention_masks=attention_masks,
-                       token_type_ids=token_type_ids,
-                       labels=labels)
-
-        return outputs
 
     def training_step(self, batch, batch_idx):
 
@@ -134,6 +116,82 @@ class TransformerModel(LightningModule):
         acc = accuracy(preds, labels)
         return loss, acc
 
-    # def validation_epoch_end(self, outputs: EPOCH_OUTPUT) -> None:
-    #     wandb.log({'loss': 0.1, 'epoch': 1, 'batch': 3})
-    #     pass
+    def active_step(self, batch, batch_idx):
+
+        input_ids = batch['input_ids']
+        token_type_ids = batch['token_type_ids']
+        attention_masks = batch['attention_masks']
+        labels = batch['labels']
+
+        output = self(input_ids=input_ids,
+                      attention_masks=attention_masks,
+                      token_type_ids=token_type_ids,
+                      labels=labels)
+
+        prediction = torch.softmax(output.logits.detach(), dim=1).cpu().numpy()
+
+        return prediction
+
+    def mc_step(self, batch, batch_idx):
+
+        input_ids = batch['input_ids']
+        token_type_ids = batch['token_type_ids']
+        attention_masks = batch['attention_masks']
+        labels = batch['labels']
+
+        mc_average = []
+
+        for k in range(10):
+
+            output = self(input_ids=input_ids,
+                          attention_masks=attention_masks,
+                          token_type_ids=token_type_ids,
+                          labels=labels)
+
+            prediction = torch.softmax(output.logits.detach(), dim=1).cpu().numpy()
+            mc_average.append(prediction)
+
+        return np.mean(np.asarray(mc_average), axis=0)
+
+    def bald_step(self, batch, batch_idx):
+
+        input_ids = batch['input_ids']
+        token_type_ids = batch['token_type_ids']
+        attention_masks = batch['attention_masks']
+        labels = batch['labels']
+
+        predictions = []
+        disagreements = []
+
+        for k in range(10):
+
+            output = self(input_ids=input_ids,
+                          attention_masks=attention_masks,
+                          token_type_ids=token_type_ids,
+                          labels=labels)
+
+            prediction = torch.softmax(output.logits.detach(), dim=1).cpu().numpy()
+
+            predictions.append(prediction)
+            disagreements.append(entropy(prediction, axis=1))
+
+        # Compute Entropy of Average
+        entropies = entropy(np.mean(predictions, axis=0), axis=1)
+        disagreements = np.mean(disagreements, axis=0)
+        return list(entropies - disagreements)
+
+    def embedding_step(self, batch, batch_idx):
+
+        input_ids = batch['input_ids']
+        token_type_ids = batch['token_type_ids']
+        attention_masks = batch['attention_masks']
+        labels = batch['labels']
+
+        output = self(input_ids=input_ids,
+                      attention_masks=attention_masks,
+                      token_type_ids=token_type_ids,
+                      labels=labels)
+
+        embedding = output.hidden_states[-1][:, 0, :].detach().unsqueeze(1).cpu().numpy()
+
+        return embedding

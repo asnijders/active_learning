@@ -356,12 +356,12 @@ class GenericDataModule(pl.LightningDataModule):
         token_type_ids = tokenized_input_seq_pairs['token_type_ids']
         attention_masks = tokenized_input_seq_pairs['attention_mask']
 
+        # TODO: check whether batches are actually of variable seq length and not 350 on average
+
         padded_batch = {'input_ids': input_ids,
                         'token_type_ids': token_type_ids,
                         'attention_masks': attention_masks,
                         'labels': labels}
-
-        # TODO verify that batches are indeed of variable seq length
 
         return padded_batch
 
@@ -385,7 +385,7 @@ class GenericDataModule(pl.LightningDataModule):
         if stage == 'test':
             pass
 
-        print('Done building datasets!\nFitting model on initial seed dataset L..', flush=True)
+        print('Done building datasets!', flush=True)
 
     def train_dataloader(self):
 
@@ -411,11 +411,21 @@ class GenericDataModule(pl.LightningDataModule):
                           batch_size=self.config.batch_size,
                           num_workers=self.config.num_workers)
 
-    def active_dataloader(self):
+    def labelled_dataloader(self, shuffle=True):
 
+        self.train.set_mode('L')
         return DataLoader(self.train,
                           collate_fn=self.batch_tokenize,
-                          shuffle=True,
+                          shuffle=shuffle,
+                          batch_size=self.config.batch_size,
+                          num_workers=self.config.num_workers)
+
+    def unlabelled_dataloader(self):
+
+        self.train.set_mode('U')
+        return DataLoader(self.train,
+                          collate_fn=self.batch_tokenize,
+                          shuffle=False,
                           batch_size=self.config.batch_size,
                           num_workers=self.config.num_workers)
 
