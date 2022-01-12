@@ -82,21 +82,39 @@ class TransformerModel(LightningModule):
         preds = outputs.logits
         acc = accuracy(preds, labels)
         metrics = {'train_acc': acc, 'loss': loss}
-        self.log_dict(metrics, batch_size=self.batch_size, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        self.log_dict(metrics,
+                      batch_size=self.batch_size,
+                      on_step=True,
+                      on_epoch=True,
+                      prog_bar=True,
+                      logger=True,
+                      sync_dist=True)
         return metrics
 
     def validation_step(self, batch, batch_idx):
 
         loss, acc = self._shared_eval_step(batch, batch_idx)
         metrics = {"val_acc": acc, "val_loss": loss}
-        self.log_dict(metrics, batch_size=self.batch_size, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        self.log_dict(metrics,
+                      batch_size=self.batch_size,
+                      on_step=True,
+                      on_epoch=True,
+                      prog_bar=True,
+                      logger=True,
+                      sync_dist=True)
         return metrics
 
     def test_step(self, batch, batch_idx):
 
         loss, acc = self._shared_eval_step(batch, batch_idx)
         metrics = {"test_acc": acc, "test_loss": loss}
-        self.log_dict(metrics, batch_size=self.batch_size, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        self.log_dict(metrics,
+                      batch_size=self.batch_size,
+                      on_step=True,
+                      on_epoch=True,
+                      prog_bar=True,
+                      logger=True,
+                      sync_dist=True)
         return metrics
 
     def _shared_eval_step(self, batch, batch_idx):

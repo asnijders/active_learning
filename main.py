@@ -70,6 +70,7 @@ def main(args):
                          log_model=False)
 
     trainer = Trainer(gpus=config.gpus,
+                      strategy=config.strategy,
                       logger=logger,
                       log_every_n_steps=config.log_every,
                       accelerator=config.accelerator,
@@ -85,19 +86,17 @@ def main(args):
                       enable_progress_bar=True,
                       auto_scale_batch_size="binsearch")
 
-    # # Fine-tune model on initial seed set
-    # print('\nFine-tuning model on initial seed..', flush=True)
-    # seed_loader = dm.labelled_dataloader()  # create loader for labelled pool
-    # trainer.fit(model, seed_loader)  # fit on labelled data
-    # print('Finished fine-tuning model on initial seed!', flush=True)
-    # print('\nEvaluating fitted model on dev set..', flush=True)
-    # val_loader = dm.val_dataloader()  # create loader for dev set
-    # results = trainer.validate(model, val_loader)  # evaluate model on dev set
-    # log_results(logger=wandb,
-    #             results=results,
-    #             dm=dm)  # log results
-
-
+    # Fine-tune model on initial seed set
+    print('\nFine-tuning model on initial seed..', flush=True)
+    seed_loader = dm.labelled_dataloader()  # create loader for labelled pool
+    trainer.fit(model, seed_loader)  # fit on labelled data
+    print('Finished fine-tuning model on initial seed!', flush=True)
+    print('\nEvaluating fitted model on dev set..', flush=True)
+    val_loader = dm.val_dataloader()  # create loader for dev set
+    results = trainer.validate(model, val_loader)  # evaluate model on dev set
+    log_results(logger=wandb,
+                results=results,
+                dm=dm)  # log results
     print('Finished evaluating model on dev set.', flush=True)
 
     # --------------------------------------- Pool-based active learning ---------------------------------------------
@@ -203,7 +202,7 @@ if __name__ == '__main__':
 
     # Training args
     # TODO make sure that we use appropriate training parameters for transformers
-    batch_size = 16 if device_count() > 0 else 4 # TODO ik heb de batch size nu op 16 staan ipv 32 (?)
+    batch_size = 16 if device_count() > 0 else 4  # TODO ik heb de batch size nu op 16 staan ipv 32 (?)
     parser.add_argument('--batch_size', default=batch_size, type=int,
                         help='no. of sentences sampled per pass')
     parser.add_argument('--max_epochs', default=1, type=int,
@@ -216,13 +215,16 @@ if __name__ == '__main__':
                         help='max no of tokens for tokenizer (default is enough for all tasks')
 
     # Lightning Trainer args
-    num_gpus = device_count() if device_count() > 0 else None # TODO update this value once everything works such that we can utilize all GPUs
+    num_gpus = device_count() if device_count() > 0 else None
     parser.add_argument('--gpus', default=num_gpus)
 
-    accelerator = None if device_count() > 0 else None
+    strategy = "ddp" if device_count() > 1 else None
+    parser.add_argument('--strategy', default=strategy)
+
+    accelerator = "gpu" if device_count() > 0 else None
     parser.add_argument('--accelerator', default=accelerator)
 
-    num_workers = 3 if device_count() > 0 else 1 # TODO this may or may not lead to some speed bottlenecks
+    num_workers = 3 if device_count() > 0 else 1  # TODO this may or may not lead to some speed bottlenecks
     parser.add_argument('--num_workers', default=num_workers, type=int,
                         help='no. of workers for DataLoaders')
 

@@ -22,6 +22,7 @@ Credit:
 import torch
 import numpy as np
 from torch.utils.data import DataLoader
+import torch.nn as nn
 from tqdm import tqdm
 from scipy.stats import entropy
 import copy
@@ -68,22 +69,23 @@ class LeastConfidence(AcquisitionFunction):
         #                               config=config,
         #                               trainer=trainer)
 
-        dataloader = dm.unlabelled_dataloader()
-        print('Performing inference on unlabelled data for {}..'.format(config.acquisition_fn))
-        model.cuda()
+        with torch.no_grad():
+            dataloader = dm.unlabelled_dataloader()
+            print('Performing inference on unlabelled data for {}..'.format(config.acquisition_fn))
+            model.cuda()
 
-        predictions = []
-        for i, batch in enumerate(dataloader):
+            predictions = []
+            for i, batch in enumerate(tqdm(dataloader)):
 
-            batch = {k: v.cuda() for k, v in batch.items()}
-            prediction = model.active_step(batch, i)
-            predictions.extend(prediction)
+                batch = {k: v.cuda() for k, v in batch.items()}
+                prediction = model.active_step(batch, i)
+                predictions.extend(prediction)
 
-        predictions = np.asarray(predictions)
-        max_probabilities, _ = np.max(predictions, axis=1)
+            predictions = np.asarray(predictions)
+            max_probabilities = np.max(predictions, axis=1)
 
-        probability_gap = 1 - np.array(max_probabilities)
-        least_confident_indices = np.argsort(probability_gap)[:k][::-1]
+            probability_gap = 1 - np.array(max_probabilities)
+            least_confident_indices = np.argsort(probability_gap)[:k][::-1]
 
         return least_confident_indices
 
@@ -142,34 +144,36 @@ class MaxEntropy(AcquisitionFunction):
         # keep track of most probable label probabilities
         max_entropies = []
 
-        dataloader = dm.unlabelled_dataloader()
-        print('Performing inference on unlabelled data for {}..'.format(config.acquisition_fn))
-        model.cuda()
+        with torch.no_grad():
 
-        if self.mode == 'entropy':
+            dataloader = dm.unlabelled_dataloader()
+            print('Performing inference on unlabelled data for {}..'.format(config.acquisition_fn))
+            model.cuda()
 
-            entropies = []
-            for i, batch in enumerate(dataloader):
+            if self.mode == 'entropy':
 
-                batch = {k: v.cuda() for k, v in batch.items()}
-                prediction = model.active_step(batch, i)
-                entropies.append(entropy(prediction, axis=1))
+                entropies = []
+                for i, batch in enumerate(dataloader):
 
-            max_entropy_indices = np.argsort(entropies)[:k][::-1]
+                    batch = {k: v.cuda() for k, v in batch.items()}
+                    prediction = model.active_step(batch, i)
+                    entropies.append(entropy(prediction, axis=1))
 
-            return max_entropy_indices
+                max_entropy_indices = np.argsort(entropies)[:k][::-1]
 
-        elif self.mode == 'mc-entropy':
+                return max_entropy_indices
 
-            mc_entropies = []
-            for i, batch in enumerate(dataloader):
-                batch = {k: v.cuda() for k, v in batch.items()}
-                mc_entropy = model.mc_step(batch, i)
-                mc_entropies.append(mc_entropy)
+            elif self.mode == 'mc-entropy':
 
-            mc_entropy_indices = np.argsort(mc_entropies)[:k][::-1]
+                mc_entropies = []
+                for i, batch in enumerate(dataloader):
+                    batch = {k: v.cuda() for k, v in batch.items()}
+                    mc_entropy = model.mc_step(batch, i)
+                    mc_entropies.append(mc_entropy)
 
-            return mc_entropy_indices
+                mc_entropy_indices = np.argsort(mc_entropies)[:k][::-1]
+
+                return mc_entropy_indices
 
 
 class BALD(AcquisitionFunction):
@@ -181,18 +185,20 @@ class BALD(AcquisitionFunction):
         This function implements entropy uncertainty sampling acquisition
         """
 
-        dataloader = dm.unlabelled_dataloader()
-        print('Performing inference on unlabelled data for {}..'.format(config.acquisition_fn))
-        model.cuda()
+        with torch.no_grad():
 
-        informations = []
-        for i, batch in enumerate(dataloader):
+            dataloader = dm.unlabelled_dataloader()
+            print('Performing inference on unlabelled data for {}..'.format(config.acquisition_fn))
+            model.cuda()
 
-            batch = {k: v.cuda() for k, v in batch.items()}
-            information = model.bald_step(batch, i)
-            informations.extend(information)
+            informations = []
+            for i, batch in enumerate(dataloader):
 
-        bald_indices = np.argsort(informations)[:k][::-1]
+                batch = {k: v.cuda() for k, v in batch.items()}
+                information = model.bald_step(batch, i)
+                informations.extend(information)
+
+            bald_indices = np.argsort(informations)[:k][::-1]
 
         return bald_indices
 

@@ -34,6 +34,7 @@ def downsample(dataset, dataset_id, downsample_rate):
 def read_dataset(input_dir, dataset_id, split, downsample_rate):
     """
     This function takes a dataset id and reads the corresponding .json split in an appropriate Pandas DataFrame
+    :param downsample_rate:
     :param input_dir:
     :param dataset_id: str indicating which dataset should be read
     :param split: str indicating which split should be read
@@ -83,7 +84,7 @@ def read_dataset(input_dir, dataset_id, split, downsample_rate):
     dataset.columns = ['Premise', 'Hypothesis', 'Label', 'ID']
 
     # downsample dataset if required
-    if 0 < downsample_rate < 1.0:
+    if 0 < downsample_rate < 1.0 and split == 'train':
         dataset = downsample(dataset,
                              dataset_id,
                              downsample_rate)
@@ -333,6 +334,8 @@ class GenericDataModule(pl.LightningDataModule):
                          "contradiction": 1,
                          "neutral": 2}
 
+        self.pin_memory = True if self.config.gpus > 0 else False
+
     def batch_tokenize(self, batch):
 
         premises = [sample['premise'] for sample in batch]
@@ -393,7 +396,8 @@ class GenericDataModule(pl.LightningDataModule):
                           collate_fn=self.batch_tokenize,
                           shuffle=True,
                           batch_size=self.config.batch_size,
-                          num_workers=self.config.num_workers)
+                          num_workers=self.config.num_workers,
+                          pin_memory=self.pin_memory)
 
     def val_dataloader(self):
 
@@ -401,7 +405,8 @@ class GenericDataModule(pl.LightningDataModule):
                           collate_fn=self.batch_tokenize,
                           shuffle=False,
                           batch_size=self.config.batch_size,
-                          num_workers=self.config.num_workers)
+                          num_workers=self.config.num_workers,
+                          pin_memory=self.pin_memory)
 
     def test_dataloader(self):
 
@@ -409,7 +414,8 @@ class GenericDataModule(pl.LightningDataModule):
                           shuffle=False,
                           collate_fn=self.batch_tokenize,
                           batch_size=self.config.batch_size,
-                          num_workers=self.config.num_workers)
+                          num_workers=self.config.num_workers,
+                          pin_memory=self.pin_memory)
 
     def labelled_dataloader(self, shuffle=True):
 
@@ -418,7 +424,8 @@ class GenericDataModule(pl.LightningDataModule):
                           collate_fn=self.batch_tokenize,
                           shuffle=shuffle,
                           batch_size=self.config.batch_size,
-                          num_workers=self.config.num_workers)
+                          num_workers=self.config.num_workers,
+                          pin_memory=self.pin_memory)
 
     def unlabelled_dataloader(self):
 
@@ -427,7 +434,8 @@ class GenericDataModule(pl.LightningDataModule):
                           collate_fn=self.batch_tokenize,
                           shuffle=False,
                           batch_size=self.config.batch_size,
-                          num_workers=self.config.num_workers)
+                          num_workers=self.config.num_workers,
+                          pin_memory=self.pin_memory)
 
     def has_unlabelled_data(self):
         return len(self.train.U) > 0
