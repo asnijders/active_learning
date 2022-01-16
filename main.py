@@ -178,8 +178,9 @@ def main(args):
                     results=results,
                     dm=dm)
 
-        labelled_loader = None
-        val_loader = None
+        del labelled_loader
+        del val_loader
+        del trainer
 
         c_print('Finished fitting model on updated pool!\n', flush=True)
 
@@ -215,7 +216,7 @@ if __name__ == '__main__':
                         help='specifies size of seed dataset')
     parser.add_argument('--labelling_batch_size', default=0.02, type=float,
                         help='specifies how many new instances will be labelled per AL iteration')
-    parser.add_argument('--iterations', default=10, type=int,
+    parser.add_argument('--iterations', default=20, type=int,
                         help='specifies number of active learning iterations')
 
     # Training args
@@ -242,7 +243,7 @@ if __name__ == '__main__':
     accelerator = "gpu" if device_count() > 0 else None
     parser.add_argument('--accelerator', default=accelerator)
 
-    num_workers = 3 if device_count() > 0 else 1  # TODO this may or may not lead to some speed bottlenecks
+    num_workers = 2 if device_count() > 0 else 1  # TODO this may or may not lead to some speed bottlenecks
     parser.add_argument('--num_workers', default=num_workers, type=int,
                         help='no. of workers for DataLoaders')
 
