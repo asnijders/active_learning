@@ -27,6 +27,7 @@ from tqdm import tqdm
 from scipy.stats import entropy
 import copy
 from pytorch_lightning import Trainer
+from src.utils import c_print
 
 # local imports
 from src.coresets import CoresetGreedy
@@ -37,7 +38,7 @@ class AcquisitionFunction:
 
         pass
 
-    def acquire_instances(self, config, model, dm, k, trainer):
+    def acquire_instances(self, config, model, dm, k):
         pass
 
 
@@ -45,7 +46,7 @@ class RandomSampler(AcquisitionFunction):
     def __init__(self):
         super().__init__()
 
-    def acquire_instances(self, config, model, dm, k, trainer):
+    def acquire_instances(self, config, model, dm, k):
 
         k_random_indices = np.random.choice(a=len(dm.train.U),
                                             size=int(k),
@@ -59,76 +60,34 @@ class LeastConfidence(AcquisitionFunction):
     def __init__(self):
         super().__init__()
 
-    def acquire_instances(self, config, model, dm, k, trainer):
+    def acquire_instances(self, config, model, dm, k):
         """
         This function implements least-confidence acquisition
         """
 
-        # predictions = get_predictions(model=model,
-        #                               dm=dm,
-        #                               config=config,
-        #                               trainer=trainer)
-
         with torch.no_grad():
             dataloader = dm.unlabelled_dataloader()
-            print('Performing inference on unlabelled data for {}..'.format(config.acquisition_fn))
+            c_print('Performing inference on unlabelled data for {}..'.format(config.acquisition_fn))
             model.cuda()
 
             predictions = []
-            for i, batch in enumerate(tqdm(dataloader)):
+            for i, batch in enumerate(dataloader):
 
-                batch = {k: v.cuda() for k, v in batch.items()}
+                batch = {key: value.cuda() for key, value in batch.items()}
                 prediction = model.active_step(batch, i)
                 predictions.extend(prediction)
 
+            # we want to determine which examples have the largest probability gap
+            # probability gap: 1 (absolute certainty) - the largest logit per prediction (=np.max(predictions, axis=1))
             predictions = np.asarray(predictions)
             max_probabilities = np.max(predictions, axis=1)
-
             probability_gap = 1 - np.array(max_probabilities)
-            least_confident_indices = np.argsort(probability_gap)[:k][::-1]
+            # we then determine the _indices_ that would sort this list of values in ascending order with np.argsort
+            # we then reverse the list to descending order ([::-1])
+            # we obtain the top k indices ([:k]), i.e. the examples with the highest probability gaps/lowest confidence
+            least_confident_indices = np.argsort(probability_gap)[::-1][:k]
 
         return least_confident_indices
-
-        # # obtain desired proportion
-        # # k = dm.train.set_k(k)
-        #
-        # # keep track of most probable label probabilities
-        # max_probabilities = []
-        #
-        # dataloader = DataLoader(dataset=dm.train,
-        #                         collate_fn=dm.batch_tokenize,
-        #                         batch_size=config.batch_size,
-        #                         shuffle=False,
-        #                         num_workers=config.num_workers)
-        #
-        #
-        #
-        # with torch.no_grad():
-        #
-        #     # disable gradient tracking
-        #     model.eval()
-        #
-        #     # loop over unlabelled data and store probabilities
-        #     for i, batch in enumerate(dataloader):
-        #
-        #         outputs = model.active_step(batch=batch,
-        #                                     batch_idx=i)
-        #         logits = outputs.logits
-        #         probabilities, _ = torch.max(torch.softmax(logits, dim=1), dim=1)
-        #         probabilities = probabilities.detach().cpu().numpy()
-        #         probabilities = list(probabilities)
-        #         max_probabilities.extend(probabilities)
-        #
-        #
-        #     # select the k examples with the largest gap between 1 and the most probable label probability
-        #     # TODO fix this function
-        #     probability_gap = 1 - np.array(max_probabilities)
-        #     least_confident_indices = np.argsort(probability_gap)[:k][::-1]
-        #
-        #     # re-enable grad computation
-        #     model.train()
-        #
-        # return least_confident_indices
 
 
 class MaxEntropy(AcquisitionFunction):
@@ -147,31 +106,37 @@ class MaxEntropy(AcquisitionFunction):
         with torch.no_grad():
 
             dataloader = dm.unlabelled_dataloader()
-            print('Performing inference on unlabelled data for {}..'.format(config.acquisition_fn))
+            c_print('Performing inference on unlabelled data for {}..'.format(config.acquisition_fn))
             model.cuda()
 
-            if self.mode == 'entropy':
+            if self.mode == 'max-entropy':
 
                 entropies = []
                 for i, batch in enumerate(dataloader):
 
-                    batch = {k: v.cuda() for k, v in batch.items()}
+                    batch = {key: value.cuda() for key, value in batch.items()}
                     prediction = model.active_step(batch, i)
-                    entropies.append(entropy(prediction, axis=1))
+                    entropies.extend(list(entropy(prediction, axis=1)))
 
-                max_entropy_indices = np.argsort(entropies)[:k][::-1]
+                # given the list of entropies, we
+                # 1) determine the indices that sort the array in ascending order
+                # 2) revert the list to descending order (high to low)
+                # 3) take the top k indices from the reverted list to obtain examples with max entropy
+                entropies = np.asarray(entropies)
+                max_entropy_indices = np.argsort(entropies)[::-1][:k]
 
                 return max_entropy_indices
 
-            elif self.mode == 'mc-entropy':
+            elif self.mode == 'mc-max-entropy':
 
                 mc_entropies = []
                 for i, batch in enumerate(dataloader):
-                    batch = {k: v.cuda() for k, v in batch.items()}
-                    mc_entropy = model.mc_step(batch, i)
-                    mc_entropies.append(mc_entropy)
+                    batch = {key: value.cuda() for key, value in batch.items()}
+                    mc_prediction = model.mc_step(batch, i)
+                    mc_entropy = entropy(mc_prediction, axis=1)
+                    mc_entropies.extend(list(mc_entropy))
 
-                mc_entropy_indices = np.argsort(mc_entropies)[:k][::-1]
+                mc_entropy_indices = np.argsort(mc_entropies)[::-1][:k]
 
                 return mc_entropy_indices
 
@@ -188,17 +153,17 @@ class BALD(AcquisitionFunction):
         with torch.no_grad():
 
             dataloader = dm.unlabelled_dataloader()
-            print('Performing inference on unlabelled data for {}..'.format(config.acquisition_fn))
+            c_print('Performing inference on unlabelled data for {}..'.format(config.acquisition_fn))
             model.cuda()
 
             informations = []
             for i, batch in enumerate(dataloader):
 
-                batch = {k: v.cuda() for k, v in batch.items()}
+                batch = {key: value.cuda() for key, value in batch.items()}
                 information = model.bald_step(batch, i)
                 informations.extend(information)
 
-            bald_indices = np.argsort(informations)[:k][::-1]
+            bald_indices = np.argsort(informations)[::-1][:k] #TODO check correctness
 
         return bald_indices
 
@@ -223,7 +188,7 @@ class Coreset(AcquisitionFunction):
                 for i, batch in enumerate(loader):
 
                     # get representations in CLS space (following Active Learning for BERT: An Empirical Study)
-                    batch = {k: v.cuda() for k, v in batch.items()}
+                    batch = {key: value.cuda() for key, value in batch.items()}
                     embedding = encoder.embedding_step(batch=batch,
                                                        batch_idx=i)
                     # TODO add an alternative kind of sentence embedding?
@@ -285,11 +250,11 @@ class Coreset(AcquisitionFunction):
 #
 #
 #     dataloader = dm.unlabelled_dataloader()
-#     print('Performing inference on unlabelled data for {}..'.format(config.acquisition_fn))
+#     c_print('Performing inference on unlabelled data for {}..'.format(config.acquisition_fn))
 #     # output = trainer.predict(model, dataloader)
 #     output = trainer.predict(model, dataloader)
 #
-#     print('Finished performing inference.')
+#     c_print('Finished performing inference.')
 #     logits = [output[i].logits for i in range(len(output))]
 #     logits = torch.cat(logits)
 #     predictions = torch.softmax(logits, dim=1)
@@ -311,7 +276,7 @@ class Coreset(AcquisitionFunction):
 #     # TODO make sure that all strategies using dataloaders only use NON SHUFFLED dataloaders to preserve meaningful order of examples and indices
 #
 #     dataloader = dm.unlabelled_dataloader()
-#     print('Performing inference on unlabelled data for {}..'.format(config.acquisition_fn))
+#     c_print('Performing inference on unlabelled data for {}..'.format(config.acquisition_fn))
 #     model.cuda()
 #
 #     if mode == 'least-confidence':
@@ -319,7 +284,7 @@ class Coreset(AcquisitionFunction):
 #         predictions = []
 #         for i, batch in enumerate(dataloader):
 #
-#             batch = {k: v.cuda() for k, v in batch.items()}
+#             batch = {key: value.cuda() for key, value in batch.items()}
 #             prediction = model.active_step(batch, i)
 #             predictions.extend(prediction)
 #
@@ -334,7 +299,7 @@ class Coreset(AcquisitionFunction):
 #         result = []
 #         for i, batch in enumerate(dataloader):
 #
-#             batch = {k: v.cuda() for k, v in batch.items()}
+#             batch = {key: value.cuda() for key, value in batch.items()}
 #             predictions = model.active_step(batch, i)
 #             result.extend(predictions)
 #
@@ -349,7 +314,7 @@ class Coreset(AcquisitionFunction):
 #         result = []
 #         for i, batch in enumerate(dataloader):
 #
-#             batch = {k: v.cuda() for k, v in batch.items()}
+#             batch = {key: value.cuda() for key, value in batch.items()}
 #             predictions = model.mc_step(batch, i)
 #
 #             result.extend(predictions)
@@ -365,7 +330,7 @@ class Coreset(AcquisitionFunction):
 #         informations = []
 #         for i, batch in enumerate(dataloader):
 #
-#             batch = {k: v.cuda() for k, v in batch.items()}
+#             batch = {key: value.cuda() for key, value in batch.items()}
 #             information = model.mc_step(batch, i)
 #
 #             informations.extend(information)
@@ -393,10 +358,10 @@ def select_acquisition_fn(fn_id):
         acquisition_fn = LeastConfidence()
 
     elif fn_id == 'max-entropy':
-        acquisition_fn = MaxEntropy(mode='entropy')
+        acquisition_fn = MaxEntropy(mode='max-entropy')
 
     elif fn_id == 'mc-max-entropy':
-        acquisition_fn = MaxEntropy(mode='mc-entropy')
+        acquisition_fn = MaxEntropy(mode='mc-max-entropy')
 
     elif fn_id == 'bald':
         acquisition_fn = BALD()

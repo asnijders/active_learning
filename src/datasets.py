@@ -13,6 +13,7 @@ from transformers import DataCollatorWithPadding
 import sys
 import numpy as np
 import os
+from src.utils import c_print
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -25,7 +26,7 @@ def downsample(dataset, dataset_id, downsample_rate):
 
     size_old = len(dataset)
     sample_size = int(downsample_rate * size_old)
-    # print(f"{'Down-sampling {}% from {}:'.format(100*downsample_rate, dataset_id):<30}"
+    # c_print(f"{'Down-sampling {}% from {}:'.format(100*downsample_rate, dataset_id):<30}"
     #       f"{'from {} to {} examples'.format(size_old, sample_size):<32}", flush=True)
 
     return dataset.sample(sample_size)
@@ -89,7 +90,7 @@ def read_dataset(input_dir, dataset_id, split, downsample_rate):
                              dataset_id,
                              downsample_rate)
 
-    print(f"{'{} {} size:'.format(dataset_id, split):<30}{len(dataset):<32}", flush=True)
+    c_print(f"{'{} {} size:'.format(dataset_id, split):<30}{len(dataset):<32}", flush=True)
 
     return dataset
 
@@ -131,7 +132,7 @@ def combine_datasets(input_dir, datasets, split, downsample_rate):
     combined_dataset = combined_dataset.reset_index(drop=True)
     combined_dataset.ID = combined_dataset.index
 
-    print(f"{'Total {} size:'.format(split):<30}{len(combined_dataset):<32}", '\n', flush=True)
+    c_print(f"{'Total {} size:'.format(split):<30}{len(combined_dataset):<32}", '\n', flush=True)
 
     return combined_dataset
 
@@ -162,13 +163,14 @@ class DataPool(Dataset):
 
             # first, we combine multiple NLI datasets into a single dataset and compile them in unlabeled pool U
             self.U = combine_datasets(self.input_dir, self.datasets, split, self.downsample_rate)
-
+            # label k samples randomly and put them in labeled pool L
             self.L = self.label_instances_randomly(k=self.seed_size)
 
             self.total_size = len(self.U) + len(self.L)
 
         else:
 
+            # for dev and test we assume that all the data is labelled, so everything is passed to L
             self.L = combine_datasets(self.input_dir, self.datasets, split, self.downsample_rate)
 
         self.data = self.L
@@ -185,7 +187,7 @@ class DataPool(Dataset):
             try:
                 self.data.iloc[index]
             except IndexError:
-                print(index, flush=True)
+                c_print(index, flush=True)
                 sys.exit()
 
         catch_index_error(index=idx)
@@ -249,16 +251,12 @@ class DataPool(Dataset):
         k = self.set_k(k)
         self.U = self.U.reset_index(drop=True)
 
-        print('Drawing {} random samples from unlabelled set U for labelled seed set L..'.format(k), flush=True)
+        c_print('Drawing {} random samples from unlabelled set U for labelled seed set L..'.format(k), flush=True)
 
         # initialize empty seed dataset L
         L = pd.DataFrame(columns=self.U.columns)
 
-        # select k instances from U and move them to L
-        random_indices = list(np.random.randint(low=0,
-                                                high=len(self.U),
-                                                size=k))
-
+        # select k random instances from U for 'labelling' and move them to L
         random_indices = list(np.random.choice(a=len(self.U),
                                                size=int(k),
                                                replace=False))
@@ -266,8 +264,8 @@ class DataPool(Dataset):
         labelled_examples = self.U.iloc[random_indices]
         L = L.append(labelled_examples).reset_index(drop=True)
         self.U = self.U.drop(labelled_examples.index).reset_index(drop=True)
-        print(f"{'Total size unlabelled pool:':<30}{len(self.U):<32}")
-        print(f"{'Total size labelled pool:':<30}{len(L):<32}")
+        c_print(f"{'Total size unlabelled pool:':<30}{len(self.U):<32}")
+        c_print(f"{'Total size labelled pool:':<30}{len(L):<32}")
 
         return L
 
@@ -289,9 +287,9 @@ class DataPool(Dataset):
         self.L = self.L.append(new_examples).reset_index(drop=True)  # Add them to the labelled pool
         self.U = self.U.drop(new_examples.index).reset_index(drop=True)  # Remove examples from unlabelled pool
         self.assert_validity()  # check whether U and L are disjoint and whether all indices are unique
-        print('Labelled {} new instances'.format(len(new_examples)), flush=True)
-        print(f"{'Total size unlabelled pool:':<30}{len(self.U):<32}", flush=True)
-        print(f"{'Total size labelled pool:':<30}{len(self.L):<32}", flush=True)
+        c_print('Labelled {} new instances'.format(len(new_examples)), flush=True)
+        c_print(f"{'Total size unlabelled pool:':<30}{len(self.U):<32}", flush=True)
+        c_print(f"{'Total size labelled pool:':<30}{len(self.L):<32}", flush=True)
 
         return None
 
@@ -372,12 +370,12 @@ class GenericDataModule(pl.LightningDataModule):
 
         if stage == 'fit':
 
-            print('\nBuilding train pool..', flush=True)
+            c_print('\nBuilding train pool..', flush=True)
             if self.train is None:
                 self.train = DataPool(config=self.config,
                                       split='train', )
 
-            print('\nBuilding dev and test sets..', flush=True)
+            c_print('\nBuilding dev and test sets..', flush=True)
             if self.val is None:
                 self.val = DataPool(config=self.config,
                                     split='dev')
@@ -388,7 +386,7 @@ class GenericDataModule(pl.LightningDataModule):
         if stage == 'test':
             pass
 
-        print('Done building datasets!', flush=True)
+        c_print('Done building datasets!', flush=True)
 
     def train_dataloader(self):
 

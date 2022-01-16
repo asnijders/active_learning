@@ -20,6 +20,7 @@ from transformers import AutoTokenizer
 from transformers import BertForSequenceClassification
 from scipy.stats import entropy
 from torchmetrics.functional import accuracy
+from src.utils import c_print
 
 
 class TransformerModel(LightningModule):
@@ -43,11 +44,6 @@ class TransformerModel(LightningModule):
         self.encoder = BertForSequenceClassification.from_pretrained(model_id, # TODO replace str with model arg
                                                                      num_labels=3,
                                                                      hidden_dropout_prob=self.dropout)
-
-        # logging
-        self.train_acc = torchmetrics.Accuracy()
-        self.valid_acc = torchmetrics.Accuracy()
-        self.test_acc = torchmetrics.Accuracy()
 
     def deconstruct(self):
         self.encoder = None
@@ -94,7 +90,8 @@ class TransformerModel(LightningModule):
     def validation_step(self, batch, batch_idx):
 
         loss, acc = self._shared_eval_step(batch, batch_idx)
-        metrics = {"val_acc": acc, "val_loss": loss}
+        metrics = {"val_acc": acc,
+                   "val_loss": loss}
         self.log_dict(metrics,
                       batch_size=self.batch_size,
                       on_step=True,
@@ -102,7 +99,19 @@ class TransformerModel(LightningModule):
                       prog_bar=True,
                       logger=True,
                       sync_dist=True)
+        # self.log("val_acc", acc, prog_bar=True)
+        # self.log("val_loss", loss, prog_bar=True)
+
         return metrics
+
+    def validation_end(self, outputs):
+
+        avg_loss = torch.stack([x['val_loss'] for x in outputs]).mean()
+        avg_acc = torch.stack([x['val_acc'] for x in outputs]).mean()
+        return {
+            'val_loss': avg_loss,
+            'val_acc': avg_acc,
+            'progress_bar': {'val_loss': avg_loss, 'val_acc': avg_acc}}
 
     def test_step(self, batch, batch_idx):
 
@@ -169,6 +178,9 @@ class TransformerModel(LightningModule):
             prediction = torch.softmax(output.logits.detach(), dim=1).cpu().numpy()
             mc_average.append(prediction)
 
+        # mc_average is an object of shape k (MC iters) x batch_size x num_classes
+        # our interest is in the mean over the different models, so we average over k, i.e. dim 0
+        # we return an array of shape batch_size x num_classes
         return np.mean(np.asarray(mc_average), axis=0)
 
     def bald_step(self, batch, batch_idx):

@@ -7,6 +7,8 @@ from pytorch_lightning.utilities.memory import garbage_collection_cuda
 import time
 import gc
 import torch
+from pytorch_lightning import Trainer
+from pytorch_lightning.utilities import rank_zero_only
 
 def collect_garbage():
     garbage_collection_cuda()
@@ -15,16 +17,19 @@ def collect_garbage():
     garbage_collection_cuda()
     gc.collect()
 
-def generate_run_id(args):
-
-    id = 'seed_{}_'
 
 # TODO put this in a Logger class
 def log_results(logger, results, dm):
 
     results = results[0]
     for key in results.keys():
-        res_dict = {'active_'+key: results[key], 'examples': len(dm.train.L)}
+        res_dict = {'active_'+key: results[key], 'labelled_examples': len(dm.train.L)}
         logger.log(res_dict)
 
     return None
+
+
+@rank_zero_only
+def c_print(*args, **kwargs):
+
+    return print(*args, **kwargs)

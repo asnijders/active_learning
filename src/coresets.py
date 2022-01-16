@@ -7,7 +7,7 @@ from __future__ import print_function, division
 
 import numpy as np
 from sklearn.metrics import pairwise_distances
-
+from src.utils import c_print
 
 class CoresetGreedy:
     def __init__(self, all_pts):
@@ -55,6 +55,6 @@ class CoresetGreedy:
             new_batch.append(ind)
 
         max_distance = max(self.min_distances)
-        print("Max distance from cluster : %0.2f" % max_distance)
+        c_print("Max distance from cluster : %0.2f" % max_distance)
 
         return new_batch, max_distance
