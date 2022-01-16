@@ -1,1 +1,0 @@
-{"active_val_acc": 0.6743687987327576, "examples": 14244, "_runtime": 107, "_timestamp": 1641990219, "_step": 3, "active_val_acc_epoch": 0.6743687987327576, "active_val_loss": 0.7193864583969116, "active_val_loss_epoch": 0.7193864583969116, "_wandb": {"runtime": 108}}

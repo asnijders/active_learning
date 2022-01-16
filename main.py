@@ -4,6 +4,7 @@ import sys
 import time
 import os
 import wandb
+import gc
 
 # PyTorch modules
 import torch
@@ -89,55 +90,53 @@ def main(args):
                        'seed': str(config.seed),
                        'AL_iter': str(0)})
 
-    # initialise model
-    model = TransformerModel(model_id=config.model_id,
-                             dropout=config.dropout,
-                             lr=config.lr,
-                             batch_size=config.batch_size)
-
     # initialise PL logging and trainer objects
     logger = WandbLogger(project="active_learning",
                          save_dir=config.output_dir,
                          log_model=False)
 
-    trainer = get_trainer(config=config,
-                          logger=logger)
-
-    # Fine-tune model on initial seed set
-    c_print('\nFine-tuning model on initial seed..', flush=True)
-    seed_loader = dm.labelled_dataloader()  # create loader for labelled pool
-    val_loader = dm.val_dataloader()  # create loader for dev set
-    trainer.fit(model=model,
-                train_dataloaders=seed_loader,
-                val_dataloaders=val_loader)  # fit on labelled data
-
-    c_print('Finished fine-tuning model on initial seed!', flush=True)
-    c_print('\nEvaluating fitted model on dev set..', flush=True)
-    results = trainer.validate(model, val_loader)  # evaluate model on dev set
-    log_results(logger=wandb,
-                results=results,
-                dm=dm)  # log results
-
-    c_print('Finished evaluating model on dev set.', flush=True)
-
     # --------------------------------------- Pool-based active learning ---------------------------------------------
     # TODO: abstract this code away into an active learner class
     c_print('\nStarting Active Learning process with strategy: {}'.format(config.acquisition_fn))
-
-    # start acquisition loop
     config.labelling_batch_size = dm.train.set_k(config.labelling_batch_size)
     for i in range(config.iterations):
 
-        # ----------------------------------- Acquiring new instances for labeling -----------------------------------
-        c_print('Active Learning iteration: {}\n'.format(i+1), flush=True)
+        # TODO wrap all of this in a function call such that everything gets cleaned up afterwards
+        c_print('Active Learning iteration: {}\n'.format(i), flush=True)
 
+        # -----------------------------------  Fitting model on current labelled dataset ------------------------------
+        # initialise model
+        model = TransformerModel(model_id=config.model_id,
+                                 dropout=config.dropout,
+                                 lr=config.lr,
+                                 batch_size=config.batch_size)
+        # initialise trainer
+        trainer = get_trainer(config=config,
+                              logger=logger)
+
+        # initialise dataloaders for current data
+        labelled_loader = dm.labelled_dataloader()
+        val_loader = dm.val_dataloader()
+
+        # fine-tune model on updated labelled dataset L, from scratch
+        c_print('\nFitting model on updated labelled pool, from scratch', flush=True)
+        trainer.fit(model=model,
+                    train_dataloaders=labelled_loader,
+                    val_dataloaders=val_loader)  # fit on labelled data
+
+        # evaluate and log results for current examples
+        results = trainer.validate(model, val_loader)
+        log_results(logger=wandb,
+                    results=results,
+                    dm=dm)
+
+        # ----------------------------------- Acquiring new instances for labeling -----------------------------------
         # set training dataset mode to access the unlabelled data
         dm.train.set_mode('U')
 
         # initialise acquisition function
         acquisition_fn = select_acquisition_fn(fn_id=config.acquisition_fn)
 
-        # acquire new examples for labelling
         if len(dm.train.U) == 0:
             c_print('All examples were labelled. Terminating Active Learning Loop...')
             break
@@ -145,44 +144,22 @@ def main(args):
         if config.labelling_batch_size > len(dm.train.U):
             config.labelling_batch_size = len(dm.train.U)
 
+        # determine instances for labeling using provided acquisition fn
         to_be_labelled = acquisition_fn.acquire_instances(config=config,
                                                           model=model,
                                                           dm=dm,
                                                           k=config.labelling_batch_size)
 
-        dm.train.label_instances(to_be_labelled)  # label new instances and move from U to L
+        # label new instances
+        dm.train.label_instances(to_be_labelled)
 
-        # --------------------------------------- Fitting model on updated pool ---------------------------------------
-        # path = config.output_dir + '/L_round_{}.csv'.format(i)
-        # dm.train.L.to_csv(path)
-        labelled_loader = dm.labelled_dataloader()
-        val_loader = dm.val_dataloader()
-
-        # initialise a new model
-        model = TransformerModel(model_id=config.model_id,
-                                 dropout=config.dropout,
-                                 lr=config.lr,
-                                 batch_size=config.batch_size)
-
-        # initialise new trainer
-        trainer = get_trainer(config=config,
-                              logger=logger)
-
-        # fine-tune model on updated labelled dataset L, from scratch
-        c_print('\nFitting model on updated labelled pool, from scratch', flush=True)
-        trainer.fit(model=model,
-                    train_dataloaders=labelled_loader,
-                    val_dataloaders=val_loader)  # fit on labelled data
-        results = trainer.validate(model, val_loader)
-        log_results(logger=wandb,
-                    results=results,
-                    dm=dm)
-
+        del model
+        del trainer
+        del acquisition_fn
         del labelled_loader
         del val_loader
-        del trainer
+        gc.collect()
 
-        c_print('Finished fitting model on updated pool!\n', flush=True)
 
     # run test set
     result = trainer.test(model=model,
