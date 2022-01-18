@@ -55,6 +55,7 @@ def read_dataset(input_dir, dataset_id, split, downsample_rate):
         data_path = '{}/snli_1.0/snli_1.0_{}.jsonl'.format(input_dir, split)
         dataset = pd.read_json(data_path, lines=True)
         dataset = dataset[['sentence1', 'sentence2', 'gold_label', 'pairID']]
+        dataset['dataset'] = 'SNLI'
         dataset = dataset.drop(dataset[dataset.gold_label.str.contains('-')].index)  # drop examples with no gold label
 
     elif dataset_id == 'ANLI':
@@ -65,9 +66,25 @@ def read_dataset(input_dir, dataset_id, split, downsample_rate):
             anli_dataset = pd.read_json(data_path, lines=True)
             anli_dataset = anli_dataset[['context', 'hypothesis', 'label', 'uid']]  # get rid of unnecessary columns
             anli_dataset['label'] = anli_dataset['label'].apply(replace_labels)  # ensures consistently named labels
+            anli_dataset['dataset'] = 'ANLI'
             anli_dfs.append(anli_dataset)
 
         dataset = pd.concat(anli_dfs, axis=0)
+
+    elif dataset_id == 'MNLI':
+
+        if split == 'train':
+            data_path = '{}/multinli_1.0/multinli_1.0_{}.jsonl'.format(input_dir, split)
+        elif split == 'dev':
+            data_path = '{}/multinli_1.0/multinli_1.0_{}_matched.jsonl'.format(input_dir, split)
+        elif split == 'test':
+            #TODO no test set available for MNLI!
+            return None
+
+        dataset = pd.read_json(data_path, lines=True)
+        dataset = dataset[['sentence1', 'sentence2', 'gold_label', 'pairID']]
+        dataset['dataset'] = 'MNLI'
+        dataset = dataset.drop(dataset[dataset.gold_label.str.contains('-')].index)
 
     # elif dataset_id == 'FEVER':
     #
@@ -82,7 +99,7 @@ def read_dataset(input_dir, dataset_id, split, downsample_rate):
         raise KeyError('No dataset found for "{}"'.format(dataset_id))
 
     # ensure consistent headers per dataset DataFrame
-    dataset.columns = ['Premise', 'Hypothesis', 'Label', 'ID']
+    dataset.columns = ['Premise', 'Hypothesis', 'Label', 'ID', 'Dataset']
 
     # downsample dataset if required
     if 0 < downsample_rate < 1.0 and split == 'train':
@@ -126,7 +143,6 @@ def combine_datasets(input_dir, datasets, split, downsample_rate):
 
     # 4. combine individual datasets into single dataset
     combined_dataset = pd.concat(dataset_list, axis=0)
-    # 5. possibly shuffle examples (?)
 
     # reset index
     combined_dataset = combined_dataset.reset_index(drop=True)
@@ -195,7 +211,7 @@ class DataPool(Dataset):
         if torch.is_tensor(idx):
             idx = idx.tolist()
 
-        premise, hypothesis, label, _ = self.data.iloc[idx]
+        premise, hypothesis, label, _, _ = self.data.iloc[idx]
 
         label = self.label2id[label]
 
@@ -309,6 +325,8 @@ class DataPool(Dataset):
         # assert that both datasets still add up to original no. of examples
         assert len(self.U) + len(self.L) == self.total_size
         return None
+
+
 
 
 class GenericDataModule(pl.LightningDataModule):

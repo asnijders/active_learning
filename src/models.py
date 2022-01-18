@@ -20,7 +20,31 @@ from transformers import AutoTokenizer
 from transformers import BertForSequenceClassification
 from scipy.stats import entropy
 from torchmetrics.functional import accuracy
+import requests
+import time
 from src.utils import c_print
+
+
+def get_model(model_id, dropout):
+
+    done = False
+
+    while done is False:
+
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(model_id)
+            model = BertForSequenceClassification.from_pretrained(model_id, # TODO replace str with model arg
+                                                                  num_labels=3,
+                                                                  hidden_dropout_prob=dropout)
+
+            done = True
+
+        except requests.HTTPError as exception:
+            print('Got internal server error. Trying to download model again in 10 seconds..', flush=True)
+            print(exception)
+            time.sleep(10)
+
+    return tokenizer, model
 
 
 class TransformerModel(LightningModule):
@@ -37,13 +61,10 @@ class TransformerModel(LightningModule):
         self.batch_size = batch_size
 
         # self.accuracy = metrics.Accuracy() # for logging to lightning
-        self.tokenizer = AutoTokenizer.from_pretrained(model_id) #TODO replace str with model arg!
         # load pre-trained, uncased, sequence-classification BERT model
         # TODO make sure the correct from_pretrained model is being loaded
-
-        self.encoder = BertForSequenceClassification.from_pretrained(model_id, # TODO replace str with model arg
-                                                                     num_labels=3,
-                                                                     hidden_dropout_prob=self.dropout)
+        self.tokenizer, self.encoder = get_model(model_id=model_id,
+                                                 dropout=dropout)
 
     def deconstruct(self):
         self.encoder = None
@@ -84,7 +105,7 @@ class TransformerModel(LightningModule):
                       on_epoch=True,
                       prog_bar=True,
                       logger=True,
-                      sync_dist=True)
+                      sync_dist=False)
         return metrics
 
     def validation_step(self, batch, batch_idx):
@@ -98,7 +119,7 @@ class TransformerModel(LightningModule):
                       on_epoch=True,
                       prog_bar=True,
                       logger=True,
-                      sync_dist=True)
+                      sync_dist=False)
         # self.log("val_acc", acc, prog_bar=True)
         # self.log("val_loss", loss, prog_bar=True)
 
@@ -123,7 +144,7 @@ class TransformerModel(LightningModule):
                       on_epoch=True,
                       prog_bar=True,
                       logger=True,
-                      sync_dist=True)
+                      sync_dist=False)
         return metrics
 
     def _shared_eval_step(self, batch, batch_idx):

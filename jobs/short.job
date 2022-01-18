@@ -5,7 +5,7 @@
 #SBATCH --job-name=test
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=3
-#SBATCH --time=00:03:00
+#SBATCH --time=00:10:00
 #SBATCH --mem=32000M
 #SBATCH --output=slurm/output_%A.out
 
@@ -27,6 +27,14 @@ cd $HOME/active_learning
 source activate active
 
 # Run your code
-srun python main.py --input_dir "$TMPDIR/ard_data" --output_dir "$TMPDIR/ard_output_dir" --downsample_rate=0.01 --acquisition_fn=least-confidence
+srun python main.py \
+            --input_dir "$TMPDIR/ard_data" \
+            --output_dir "$TMPDIR/ard_output_dir" \
+            --acquisition_fn="random" \
+            --labelling_batch_size=0.02 \
+            --seed_size=0.02 \
+            --downsample_rate=0.01 \
+            --log_every=2 \
+            --debug=True \
 
 cp -r "$TMPDIR"/ard_output_dir $HOME/active_learning/results

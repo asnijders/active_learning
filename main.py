@@ -22,8 +22,7 @@ from pytorch_lightning.utilities.memory import garbage_collection_cuda
 from src.models import TransformerModel
 from src.datasets import GenericDataModule
 from src.strategies import select_acquisition_fn
-from src.utils import log_results
-from src.utils import c_print
+from src.utils import log_results, c_print, log_percentages
 
 import warnings
 import logging
@@ -39,14 +38,25 @@ import sys
 
 def get_trainer(config, logger):
 
-    early_stopping = EarlyStopping(monitor="val_acc", min_delta=0.00, patience=1, verbose=False, mode="max")
+    if config.debug is False:
+        early_stopping_callback = [EarlyStopping(monitor="val_acc",
+                                                 min_delta=0.00,
+                                                 patience=1,
+                                                 verbose=False,
+                                                 mode="max")]
+        epochs = config.max_epochs
+
+    else:
+        early_stopping_callback = None
+        epochs = 1
+
     trainer = Trainer(gpus=config.gpus,
-                      strategy=DDPStrategy(find_unused_parameters=False),
+                      strategy=config.strategy,
                       logger=logger,
-                      callbacks=[early_stopping],
+                      callbacks=early_stopping_callback,
                       log_every_n_steps=config.log_every,
                       accelerator=config.accelerator,
-                      max_epochs=config.max_epochs,
+                      max_epochs=epochs,
                       deterministic=True,
                       enable_checkpointing=False,
                       enable_model_summary=False,
@@ -96,12 +106,13 @@ def main(args):
                          log_model=False)
 
     # --------------------------------------- Pool-based active learning ---------------------------------------------
-    # TODO: abstract this code away into an active learner class
+    # TODO: abstract this code away into an active learner class, or...
+    # TODO: wrap all of this in a function call such that everything gets cleaned up afterwards?
+
     c_print('\nStarting Active Learning process with strategy: {}'.format(config.acquisition_fn))
     config.labelling_batch_size = dm.train.set_k(config.labelling_batch_size)
     for i in range(config.iterations):
 
-        # TODO wrap all of this in a function call such that everything gets cleaned up afterwards
         c_print('Active Learning iteration: {}\n'.format(i), flush=True)
 
         # -----------------------------------  Fitting model on current labelled dataset ------------------------------
@@ -150,6 +161,12 @@ def main(args):
                                                           dm=dm,
                                                           k=config.labelling_batch_size)
 
+        # log share of each dataset in queried examples
+        log_percentages(indices=to_be_labelled,
+                        logger=wandb,
+                        dm=dm,
+                        epoch=i)
+
         # label new instances
         dm.train.label_instances(to_be_labelled)
 
@@ -179,7 +196,7 @@ if __name__ == '__main__':
     # Experiment args
     parser.add_argument('--seed', default=42, type=int,
                         help='specifies global seed')
-    parser.add_argument('--datasets', default=['SNLI'], type=list,
+    parser.add_argument('--datasets', default=['SNLI', 'ANLI', 'MNLI'], type=list,
                         help='list to specify nli datasets')
     parser.add_argument('--model_id', default='bert-base-uncased', type=str,
                         help='specifies which transformer is used for encoding sentence pairs')
@@ -193,8 +210,9 @@ if __name__ == '__main__':
                         help='specifies size of seed dataset')
     parser.add_argument('--labelling_batch_size', default=0.02, type=float,
                         help='specifies how many new instances will be labelled per AL iteration')
-    parser.add_argument('--iterations', default=20, type=int,
+    parser.add_argument('--iterations', default=10, type=int,
                         help='specifies number of active learning iterations')
+    # TODO add an arg to toggle downscaling of dev sets since this is done in some AL papers
 
     # Training args
     # TODO make sure that we use appropriate training parameters for transformers
@@ -214,18 +232,18 @@ if __name__ == '__main__':
     num_gpus = device_count() if device_count() > 0 else None
     parser.add_argument('--gpus', default=num_gpus)
 
-    strategy = "ddp" if device_count() > 1 else None
+    strategy = DDPStrategy(find_unused_parameters=False) if device_count() > 1 else None
     parser.add_argument('--strategy', default=strategy)
 
     accelerator = "gpu" if device_count() > 0 else None
     parser.add_argument('--accelerator', default=accelerator)
 
-    num_workers = 2 if device_count() > 0 else 1  # TODO this may or may not lead to some speed bottlenecks
+    num_workers = 3 if device_count() > 0 else 1  # TODO this may or may not lead to some speed bottlenecks
     parser.add_argument('--num_workers', default=num_workers, type=int,
                         help='no. of workers for DataLoaders')
 
     # Auxiliary args
-    parser.add_argument('--debug', default=True, type=bool,
+    parser.add_argument('--debug', default=False, type=bool,
                         help='toggle elaborate torch errors')
     parser.add_argument('--toy_run', default=1.00, type=float,
                         help='proportion of batches used in train/dev/test phase (useful for debugging)')
