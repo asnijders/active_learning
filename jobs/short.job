@@ -5,7 +5,7 @@
 #SBATCH --job-name=test
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=3
-#SBATCH --time=00:10:00
+#SBATCH --time=00:25:00
 #SBATCH --mem=32000M
 #SBATCH --output=slurm/output_%A.out
 
@@ -30,11 +30,17 @@ source activate active
 srun python main.py \
             --input_dir "$TMPDIR/ard_data" \
             --output_dir "$TMPDIR/ard_output_dir" \
-            --acquisition_fn="random" \
+            --model_id="bert-base-uncased" \
+            --batch_size=16 \
+            --acquisition_fn="max-entropy" \
             --labelling_batch_size=0.02 \
             --seed_size=0.02 \
             --downsample_rate=0.01 \
             --log_every=2 \
+            --refresh_rate=25 \
             --debug=True \
+            --seed=43 \
+            --iterations=10 \
+            --uid="debug" \
 
 cp -r "$TMPDIR"/ard_output_dir $HOME/active_learning/results

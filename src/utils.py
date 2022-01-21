@@ -9,6 +9,8 @@ import gc
 import torch
 from pytorch_lightning import Trainer
 from pytorch_lightning.utilities import rank_zero_only
+from pytorch_lightning.callbacks import EarlyStopping
+
 
 def collect_garbage():
     garbage_collection_cuda()
@@ -30,24 +32,80 @@ def log_results(logger, results, dm):
     return None
 
 
-def log_percentages(indices, logger, dm, epoch):
+def get_trainer(config, logger, batch_size=None):
+    """
+    Factory for building trainer object
+    :param config:
+    :param logger:
+    :param batch_size:
+    :return:
+    """
 
-    # TODO the condition below shouldn't be possible to begin with
-    if len(indices) > len(dm.train.U):
-        indices = indices[:len(dm.train.U)]
+    if config.debug is False:
+        early_stopping_callback = [EarlyStopping(monitor="val_loss",
+                                                 min_delta=0.00,
+                                                 patience=config.patience,
+                                                 verbose=False,
+                                                 mode="min")]
+        epochs = config.max_epochs
 
-    new_examples = dm.train.U.iloc[indices]  # select queried examples from unlabelled pool
-    percentages = new_examples['Dataset'].value_counts(normalize=True).to_dict()  # compute each dataset's share
-    percentages['labelled_examples'] = len(dm.train.L) + len(new_examples)  # variable for x-axis: old L + new batch
-    percentages['AL_iter'] = epoch
-    logger.log(percentages)
+    else:
+        early_stopping_callback = None
+        epochs = 1
 
-    # TODO come up with a fancier way to plot, later.
-    # labels = new_examples['Dataset'].unique()
-    # values = new_examples['Dataset'].value_counts(normalize=True).to_list()
-    # data = [[label, val] for (label, val) in zip(labels, values)]
-    # table = logger.Table(data=data, columns=["label", "value"])
-    # logger.log({"my_bar_chart_id": logger.plot.bar(table, "label", "value", title="Custom Bar Chart")})
+    trainer = Trainer(gpus=config.gpus,
+                      strategy=config.strategy,
+                      logger=logger,
+                      callbacks=early_stopping_callback,
+                      log_every_n_steps=config.log_every,
+                      accelerator=config.accelerator,
+                      max_epochs=epochs,
+                      deterministic=True,
+                      enable_checkpointing=False,
+                      enable_model_summary=False,
+                      # profiler="simple",
+                      num_sanity_val_steps=0,
+                      limit_val_batches=config.toy_run,
+                      limit_train_batches=config.toy_run,
+                      limit_test_batches=config.toy_run,
+                      progress_bar_refresh_rate=config.refresh_rate,
+                      enable_progress_bar=True,
+                      auto_scale_batch_size="binsearch")
+
+    return trainer
+
+
+def log_percentages(mode, new_indices, logger, dm, epoch):
+    """
+    Logs the makeup of the current labelled pool, or the AL iteration, in terms of:
+    - dataset composition
+    - label distribution
+    - more other things in the future?
+    :param mode: 'makeup' logs statistics for the current pool of labelled examples
+                 'active' logs statistics for AL iteration
+    :param new_indices: set of indices of newly queried examples
+    :param logger: wandb object
+    :param dm: datamodule
+    :return:
+    """
+
+    for key in ['Dataset', 'Label']:
+
+        if mode == 'makeup':
+
+            labelled_examples = dm.train.L
+            percentages = labelled_examples[key].value_counts(normalize=True).to_dict()
+            percentages = {k + '_makeup': v for k, v in percentages.items()}
+            percentages['labelled_examples'] = len(dm.train.L)  # variable for x-axis: current L
+            logger.log(percentages)
+
+        elif mode == 'active':
+
+            new_examples = dm.train.U.iloc[new_indices]  # select queried examples from unlabelled pool
+            percentages = new_examples[key].value_counts(normalize=True).to_dict()
+            percentages['labelled_examples'] = len(dm.train.L) + len(new_examples)  # variable for x-axis: old L + new batch
+            percentages['AL_iter'] = epoch
+            logger.log(percentages)
 
     return None
 

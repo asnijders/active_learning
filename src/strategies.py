@@ -27,7 +27,7 @@ from tqdm import tqdm
 from scipy.stats import entropy
 import copy
 from pytorch_lightning import Trainer
-from src.utils import c_print
+from src.utils import c_print, get_trainer
 
 # local imports
 from src.coresets import CoresetGreedy
@@ -65,29 +65,42 @@ class LeastConfidence(AcquisitionFunction):
         This function implements least-confidence acquisition
         """
 
-        with torch.no_grad():
-            dataloader = dm.unlabelled_dataloader()
-            c_print('Performing inference on unlabelled data for {}..'.format(config.acquisition_fn))
-            model.cuda()
+        dataloader = dm.unlabelled_dataloader()
+        trainer = get_trainer(config, logger=None)
 
-            predictions = []
-            for i, batch in enumerate(dataloader):
+        predictions = trainer.predict(model, dataloader)
 
-                batch = {key: value.cuda() for key, value in batch.items()}
-                prediction = model.active_step(batch, i)
-                predictions.extend(prediction)
-
-            # we want to determine which examples have the largest probability gap
-            # probability gap: 1 (absolute certainty) - the largest logit per prediction (=np.max(predictions, axis=1))
-            predictions = np.asarray(predictions)
-            max_probabilities = np.max(predictions, axis=1)
-            probability_gap = 1 - np.array(max_probabilities)
-            # we then determine the _indices_ that would sort this list of values in ascending order with np.argsort
-            # we then reverse the list to descending order ([::-1])
-            # we obtain the top k indices ([:k]), i.e. the examples with the highest probability gaps/lowest confidence
-            least_confident_indices = np.argsort(probability_gap)[::-1][:k]
+        # reshape from n_batches x batch_s x n_classes to n_examples x n_classes
+        predictions = np.concatenate(predictions, axis=0)
+        max_probabilities = np.max(predictions, axis=1)
+        probability_gap = 1 - np.array(max_probabilities)
+        least_confident_indices = np.argsort(probability_gap)[::-1][:k]
 
         return least_confident_indices
+
+        # with torch.no_grad():
+        #     dataloader = dm.unlabelled_dataloader()
+        #     c_print('Performing inference on unlabelled data for {}..'.format(config.acquisition_fn))
+        #     model.cuda()
+        #
+        #     predictions = []
+        #     for i, batch in enumerate(dataloader):
+        #
+        #         batch = {key: value.cuda() for key, value in batch.items()}
+        #         prediction = model.active_step(batch, i)
+        #         predictions.extend(prediction)
+        #
+        #     # we want to determine which examples have the largest probability gap
+        #     # probability gap: 1 (absolute certainty) - the largest logit per prediction (=np.max(predictions, axis=1))
+        #     predictions = np.asarray(predictions)
+        #     max_probabilities = np.max(predictions, axis=1)
+        #     probability_gap = 1 - np.array(max_probabilities)
+        #     # we then determine the _indices_ that would sort this list of values in ascending order with np.argsort
+        #     # we then reverse the list to descending order ([::-1])
+        #     # we obtain the top k indices ([:k]), i.e. the examples with the highest probability gaps/lowest confidence
+        #     least_confident_indices = np.argsort(probability_gap)[::-1][:k]
+
+        # return least_confident_indices
 
 
 class MaxEntropy(AcquisitionFunction):
@@ -100,45 +113,30 @@ class MaxEntropy(AcquisitionFunction):
         This function implements max-entropy and MC max-entropy acquisition
         """
 
-        # keep track of most probable label probabilities
-        max_entropies = []
+        dataloader = dm.unlabelled_dataloader()
+        trainer = get_trainer(config, logger=None)
 
-        with torch.no_grad():
+        if self.mode == 'max-entropy':
 
-            dataloader = dm.unlabelled_dataloader()
-            c_print('Performing inference on unlabelled data for {}..'.format(config.acquisition_fn))
-            model.cuda()
+            predictions = trainer.predict(model, dataloader)
 
-            if self.mode == 'max-entropy':
+            # reshape from n_batches x batch_s x n_classes to n_examples x n_classes
+            predictions = np.concatenate(predictions, axis=0)
+            entropies = entropy(predictions, axis=1)
+            max_entropy_indices = np.argsort(entropies)[::-1][:k]
 
-                entropies = []
-                for i, batch in enumerate(dataloader):
+            return max_entropy_indices
 
-                    batch = {key: value.cuda() for key, value in batch.items()}
-                    prediction = model.active_step(batch, i)
-                    entropies.extend(list(entropy(prediction, axis=1)))
+        elif self.mode == 'mc-max-entropy':
 
-                # given the list of entropies, we
-                # 1) determine the indices that sort the array in ascending order
-                # 2) revert the list to descending order (high to low)
-                # 3) take the top k indices from the reverted list to obtain examples with max entropy
-                entropies = np.asarray(entropies)
-                max_entropy_indices = np.argsort(entropies)[::-1][:k]
+            predictions = trainer.predict(model, dataloader)
 
-                return max_entropy_indices
+            # reshape from n_batches x batch_s x n_classes to n_examples x n_classes
+            predictions = np.concatenate(predictions, axis=0)
+            entropies = entropy(predictions, axis=1)
+            mc_entropy_indices = np.argsort(entropies)[::-1][:k]
 
-            elif self.mode == 'mc-max-entropy':
-
-                mc_entropies = []
-                for i, batch in enumerate(dataloader):
-                    batch = {key: value.cuda() for key, value in batch.items()}
-                    mc_prediction = model.mc_step(batch, i)
-                    mc_entropy = entropy(mc_prediction, axis=1)
-                    mc_entropies.extend(list(mc_entropy))
-
-                mc_entropy_indices = np.argsort(mc_entropies)[::-1][:k]
-
-                return mc_entropy_indices
+            return mc_entropy_indices
 
 
 class BALD(AcquisitionFunction):
@@ -150,22 +148,29 @@ class BALD(AcquisitionFunction):
         This function implements entropy uncertainty sampling acquisition
         """
 
-        with torch.no_grad():
-
-            dataloader = dm.unlabelled_dataloader()
-            c_print('Performing inference on unlabelled data for {}..'.format(config.acquisition_fn))
-            model.cuda()
-
-            informations = []
-            for i, batch in enumerate(dataloader):
-
-                batch = {key: value.cuda() for key, value in batch.items()}
-                information = model.bald_step(batch, i)
-                informations.extend(information)
-
-            bald_indices = np.argsort(informations)[::-1][:k] #TODO check correctness
-
+        dataloader = dm.unlabelled_dataloader()
+        trainer = get_trainer(config, logger=None)
+        informations = trainer.predict(model, dataloader)
+        informations = np.concatenate(informations, axis=0)
+        bald_indices = np.argsort(informations)[::-1][:k]
         return bald_indices
+
+        # with torch.no_grad():
+        #
+        #     dataloader = dm.unlabelled_dataloader()
+        #     c_print('Performing inference on unlabelled data for {}..'.format(config.acquisition_fn))
+        #     model.cuda()
+        #
+        #     informations = []
+        #     for i, batch in enumerate(dataloader):
+        #
+        #         batch = {key: value.cuda() for key, value in batch.items()}
+        #         information = model.bald_step(batch, i)
+        #         informations.extend(information)
+        #
+        #     bald_indices = np.argsort(informations)[::-1][:k] #TODO check correctness
+        #
+        # return bald_indices
 
 
 class Coreset(AcquisitionFunction):
@@ -175,43 +180,43 @@ class Coreset(AcquisitionFunction):
 
     def acquire_instances(self, config, model, dm, k, dropout_k=10):
 
-        def get_features(encoder, loader):
+        def get_features(encoder, dataloader):
             """
             function for performing inference on labeled and unlabeled data
             takes a model and a dataloader, returns a list of embeddings
             """
-            features = []
-            encoder.eval()
-            encoder.cuda()
 
-            with torch.no_grad():
-                for i, batch in enumerate(loader):
+            trainer = get_trainer(config, logger=None)
+            embeddings = trainer.predict(model, dataloader)
+            embeddings = np.concatenate(embeddings, axis=0)
 
-                    # get representations in CLS space (following Active Learning for BERT: An Empirical Study)
-                    batch = {key: value.cuda() for key, value in batch.items()}
-                    embedding = encoder.embedding_step(batch=batch,
-                                                       batch_idx=i)
-                    # TODO add an alternative kind of sentence embedding?
-                    features.extend(embedding)
+            return list(embeddings)
 
-            encoder.train()
-
-            return features
-
-        # create separate dataset objects for labeled and unlabeled data
-        # create dataloader for unlabelled data
-        unlabelled_loader = dm.unlabelled_dataloader()
+            # features = []
+            # encoder.eval()
+            # encoder.cuda()
+            #
+            # with torch.no_grad():
+            #     for i, batch in enumerate(loader):
+            #
+            #         # get representations in CLS space (following Active Learning for BERT: An Empirical Study)
+            #         batch = {key: value.cuda() for key, value in batch.items()}
+            #         embedding = encoder.embedding_step(batch=batch,
+            #                                            batch_idx=i)
+            #         # TODO add an alternative kind of sentence embedding?
+            #         features.extend(embedding)
+            #
+            # encoder.train()
+            #
+            # return features
 
         # get features for unlabelled data
         unlabelled_features = get_features(encoder=model,
-                                           loader=unlabelled_loader)
-
-        # create dataloader for labelled data
-        labelled_loader = dm.labelled_dataloader(shuffle=False)
+                                           dataloader=dm.unlabelled_dataloader())
 
         # get features for labelled data
         labelled_features = get_features(encoder=model,
-                                         loader=labelled_loader)
+                                         dataloader=dm.labelled_dataloader(shuffle=False))
 
         all_features = labelled_features + unlabelled_features
 
@@ -227,119 +232,6 @@ class Coreset(AcquisitionFunction):
 
         return new_batch
 
-
-# def get_predictions(model, dm, config, trainer):
-#     """
-#     This function performs inference using a trained model in Pytorch Lightning
-#     :param trainer:
-#     :param model:
-#     :param dm:
-#     :param config:
-#     :return: list of predictions
-#     """
-#
-#     # TODO make sure that dropout is still enabled for MC-based strategies (unsure whether this is disabled for train.predict)
-#     # TODO make sure that all strategies using dataloaders only use NON SHUFFLED dataloaders to preserve meaningful order of examples and indices
-#
-#     # TODO see below
-#     """
-#     The BasePredictionWriter should be used while using a spawn based accelerator.
-#     This happens for Trainer(strategy="ddp_spawn") or training on
-#     8 TPU cores with Trainer(tpu_cores=8) as predictions won’t be returned.
-#     """
-#
-#
-#     dataloader = dm.unlabelled_dataloader()
-#     c_print('Performing inference on unlabelled data for {}..'.format(config.acquisition_fn))
-#     # output = trainer.predict(model, dataloader)
-#     output = trainer.predict(model, dataloader)
-#
-#     c_print('Finished performing inference.')
-#     logits = [output[i].logits for i in range(len(output))]
-#     logits = torch.cat(logits)
-#     predictions = torch.softmax(logits, dim=1)
-#
-#     return predictions
-#
-
-# def get_predictions_manual(model, dm, config, mode):
-#     """
-#     This function performs inference using a trained model in Pytorch Lightning
-#     :param trainer:
-#     :param model:
-#     :param dm:
-#     :param config:
-#     :return: list of predictions
-#     """
-#
-#     # TODO make sure that dropout is still enabled for MC-based strategies (unsure whether this is disabled for train.predict)
-#     # TODO make sure that all strategies using dataloaders only use NON SHUFFLED dataloaders to preserve meaningful order of examples and indices
-#
-#     dataloader = dm.unlabelled_dataloader()
-#     c_print('Performing inference on unlabelled data for {}..'.format(config.acquisition_fn))
-#     model.cuda()
-#
-#     if mode == 'least-confidence':
-#
-#         predictions = []
-#         for i, batch in enumerate(dataloader):
-#
-#             batch = {key: value.cuda() for key, value in batch.items()}
-#             prediction = model.active_step(batch, i)
-#             predictions.extend(prediction)
-#
-#             # TODO delete this when done!
-#             if i % 100 == 0 and i > 0:
-#                 break
-#
-#         return predictions
-#
-#     if mode == 'entropy':
-#
-#         result = []
-#         for i, batch in enumerate(dataloader):
-#
-#             batch = {key: value.cuda() for key, value in batch.items()}
-#             predictions = model.active_step(batch, i)
-#             result.extend(predictions)
-#
-#             # TODO delete this when done!
-#             if i % 100 == 0 and i > 0:
-#                 break
-#
-#         return result
-#
-#     if mode == 'mc':
-#
-#         result = []
-#         for i, batch in enumerate(dataloader):
-#
-#             batch = {key: value.cuda() for key, value in batch.items()}
-#             predictions = model.mc_step(batch, i)
-#
-#             result.extend(predictions)
-#
-#             # TODO delete this when done!
-#             if i % 100 == 0 and i > 0:
-#                 break
-#
-#         return result
-#
-#     if mode == 'bald':
-#
-#         informations = []
-#         for i, batch in enumerate(dataloader):
-#
-#             batch = {key: value.cuda() for key, value in batch.items()}
-#             information = model.mc_step(batch, i)
-#
-#             informations.extend(information)
-#
-#             # TODO delete this when done!
-#             if i % 100 == 0 and i > 0:
-#                 break
-#
-#         return informations
 
 
 def select_acquisition_fn(fn_id):

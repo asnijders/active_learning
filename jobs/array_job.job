@@ -1,14 +1,14 @@
 #!/bin/bash
 
 #SBATCH --partition=gpu_shared
-#SBATCH --gres=gpu:1
-#SBATCH --job-name=test
+#SBATCH --gres=gpu:3
+#SBATCH --job-name=ArrayJob
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=3
-#SBATCH --time=04:00:00
+#SBATCH --time=24:00:00
 #SBATCH --mem=32000M
 #SBATCH --output=slurm/slurm_array_testing_%A_%a.out
-#SBATCH --array=1-15%1
+#SBATCH --array=1-18%2
 
 module purge
 module load 2021
@@ -32,9 +32,17 @@ HPARAMS_FILE=$HOME/active_learning/jobs/hparams/array_job_hyperparameters.txt
 srun python main.py \
             --input_dir "$TMPDIR/ard_data" \
             --output_dir "$TMPDIR/ard_output_dir" \
-            --labelling_batch_size=0.10 \
             --num_workers=3 \
             --batch_size=16 \
+            --uid="19012022" \
+            --model_id="bert-base-uncased" \
+            --batch_size=16 \
+            --labelling_batch_size=0.02 \
+            --seed_size=0.02 \
+            --downsample_rate=0.25 \
+            --log_every=25 \
+            --refresh_rate=100 \
+            --iterations=10 \
             $(head -$SLURM_ARRAY_TASK_ID $HPARAMS_FILE | tail -1)
 
 cp -r "$TMPDIR"/ard_output_dir $HOME/active_learning/results

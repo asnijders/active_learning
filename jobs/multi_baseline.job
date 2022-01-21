@@ -2,10 +2,10 @@
 
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:3
-#SBATCH --job-name=multi_gpu
+#SBATCH --job-name=baseline
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=3
-#SBATCH --time=01:00:00
+#SBATCH --time=03:00:00
 #SBATCH --mem=32000M
 #SBATCH --output=slurm/output_%A.out
 
@@ -32,13 +32,15 @@ srun python main.py \
             --output_dir "$TMPDIR/ard_output_dir" \
             --model_id="bert-base-uncased" \
             --batch_size=16 \
-            --acquisition_fn="max-entropy" \
-            --labelling_batch_size=0.02 \
-            --seed_size=0.02 \
+            --patience=2 \
+            --uid="baseline" \
+            --acquisition_fn="random" \
+            --labelling_batch_size=0.10 \
+            --seed_size=0.40 \
             --downsample_rate=0.25 \
             --log_every=25 \
             --refresh_rate=100 \
             --seed=42 \
-            --iterations=10 \
+            --iterations=6 \
 
 cp -r "$TMPDIR"/ard_output_dir $HOME/active_learning/results

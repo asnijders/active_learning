@@ -1,75 +1,33 @@
 # General imports
 import argparse
 import sys
-import time
 import os
 import wandb
 import gc
+import warnings
+import logging
+import datetime
+import time
 
-# PyTorch modules
+# Torch modules
 import torch
-import pytorch_lightning
 from torch.cuda import device_count
-from pytorch_lightning import Trainer
 from pytorch_lightning import seed_everything
 from pytorch_lightning.loggers import WandbLogger
-from pytorch_lightning.callbacks import EarlyStopping
 from pytorch_lightning.strategies import DDPStrategy
-from pytorch_lightning.utilities import rank_zero_only
-from pytorch_lightning.utilities.memory import garbage_collection_cuda
 
 # Local imports
 from src.models import TransformerModel
 from src.datasets import GenericDataModule
 from src.strategies import select_acquisition_fn
-from src.utils import log_results, c_print, log_percentages
+from src.utils import log_results, c_print, log_percentages, get_trainer
 
-import warnings
-import logging
-import datetime
 logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
 logging.getLogger("transformers").setLevel(logging.WARNING)
 warnings.filterwarnings("ignore", ".*does not have many workers.*")
 warnings.filterwarnings("ignore", "Some weights of the model checkpoint")
 os.environ["WANDB_SILENT"] = "true"
 wandb.login()
-import sys
-
-
-def get_trainer(config, logger):
-
-    if config.debug is False:
-        early_stopping_callback = [EarlyStopping(monitor="val_acc",
-                                                 min_delta=0.00,
-                                                 patience=1,
-                                                 verbose=False,
-                                                 mode="max")]
-        epochs = config.max_epochs
-
-    else:
-        early_stopping_callback = None
-        epochs = 1
-
-    trainer = Trainer(gpus=config.gpus,
-                      strategy=config.strategy,
-                      logger=logger,
-                      callbacks=early_stopping_callback,
-                      log_every_n_steps=config.log_every,
-                      accelerator=config.accelerator,
-                      max_epochs=epochs,
-                      deterministic=True,
-                      enable_checkpointing=False,
-                      enable_model_summary=False,
-                      # profiler="simple",
-                      num_sanity_val_steps=0,
-                      limit_val_batches=config.toy_run,
-                      limit_train_batches=config.toy_run,
-                      limit_test_batches=config.toy_run,
-                      progress_bar_refresh_rate=config.refresh_rate,
-                      enable_progress_bar=True,
-                      auto_scale_batch_size="binsearch")
-
-    return trainer
 
 
 def main(args):
@@ -96,7 +54,8 @@ def main(args):
     dm.setup(stage='fit')
 
     # init logger
-    wandb.init(config={'acquisition_fn': str(config.acquisition_fn),
+    wandb.init(config={'experiment_id' : str(config.uid),
+                       'acquisition_fn': str(config.acquisition_fn),
                        'seed': str(config.seed),
                        'AL_iter': str(0)})
 
@@ -104,6 +63,13 @@ def main(args):
     logger = WandbLogger(project="active_learning",
                          save_dir=config.output_dir,
                          log_model=False)
+
+    # log makeup of initial labelled pool
+    log_percentages(mode='makeup',
+                    new_indices=None,
+                    logger=wandb,
+                    dm=dm,
+                    epoch=None)
 
     # --------------------------------------- Pool-based active learning ---------------------------------------------
     # TODO: abstract this code away into an active learner class, or...
@@ -120,7 +86,9 @@ def main(args):
         model = TransformerModel(model_id=config.model_id,
                                  dropout=config.dropout,
                                  lr=config.lr,
-                                 batch_size=config.batch_size)
+                                 batch_size=config.batch_size,
+                                 acquisition_fn=config.acquisition_fn,
+                                 mc_iterations=config.mc_iterations)
         # initialise trainer
         trainer = get_trainer(config=config,
                               logger=logger)
@@ -162,7 +130,8 @@ def main(args):
                                                           k=config.labelling_batch_size)
 
         # log share of each dataset in queried examples
-        log_percentages(indices=to_be_labelled,
+        log_percentages(mode='active',
+                        new_indices=to_be_labelled,
                         logger=wandb,
                         dm=dm,
                         epoch=i)
@@ -170,6 +139,14 @@ def main(args):
         # label new instances
         dm.train.label_instances(to_be_labelled)
 
+        # log makeup of updated labelled pool
+        log_percentages(mode='makeup',
+                        new_indices=None,
+                        logger=wandb,
+                        dm=dm,
+                        epoch=None)
+
+        # some extra precautions to prevent memory leaks
         del model
         del trainer
         del acquisition_fn
@@ -177,10 +154,34 @@ def main(args):
         del val_loader
         gc.collect()
 
+    # --------------------------------------------- Testing final model --------------------------------------------- #
+    # initialise final model
+    model = TransformerModel(model_id=config.model_id,
+                             dropout=config.dropout,
+                             lr=config.lr,
+                             batch_size=config.batch_size,
+                             acquisition_fn=config.acquisition_fn,
+                             mc_iterations=config.mc_iterations)
 
-    # run test set
-    result = trainer.test(model=model,
-                          datamodule=dm)
+    trainer = get_trainer(config=config,
+                          logger=logger)
+
+    # initialise dataloaders for current data
+    labelled_loader = dm.labelled_dataloader()
+    val_loader = dm.val_dataloader()
+    test_loader = dm.test_dataloader()
+
+    # fine-tune model on final labelled dataset L, from scratch
+    c_print('\nFitting model on updated labelled pool, from scratch', flush=True)
+    trainer.fit(model=model,
+                train_dataloaders=labelled_loader,
+                val_dataloaders=val_loader)  # fit on labelled data
+
+    # evaluate on test set and log statistics
+    results = trainer.test(model, test_loader)
+    log_results(logger=wandb,
+                results=results,
+                dm=dm)
 
 
 if __name__ == '__main__':
@@ -192,6 +193,8 @@ if __name__ == '__main__':
                         help='specifies where to read datasets from scratch disk')
     parser.add_argument('--output_dir', default=None, type=str,
                         help='specifies where on scratch disk output should be stored')
+    parser.add_argument('--uid', default=None, type=str,
+                        help='unique ID of array job. useful for grouping multiple runs in wandb')
 
     # Experiment args
     parser.add_argument('--seed', default=42, type=int,
@@ -199,9 +202,14 @@ if __name__ == '__main__':
     parser.add_argument('--datasets', default=['SNLI', 'ANLI', 'MNLI'], type=list,
                         help='list to specify nli datasets')
     parser.add_argument('--model_id', default='bert-base-uncased', type=str,
-                        help='specifies which transformer is used for encoding sentence pairs')
+                        help='specifies which transformer is used for encoding sentence pairs'
+                             'Choose from:'
+                             'bert-base-uncased'
+                             'bert-large-uncased')
     parser.add_argument('--acquisition_fn', default='coreset', type=str,
                         help='specifies which acquisition function is used for pool-based active learning')
+    parser.add_argument('--mc_iterations', default=4, type=int,
+                        help='specifies number of mc iterations over data')
 
     # Active Learning args
     parser.add_argument('--downsample_rate', default=1.00, type=float,
@@ -221,6 +229,8 @@ if __name__ == '__main__':
                         help='no. of sentences sampled per pass')
     parser.add_argument('--max_epochs', default=10, type=int,
                         help='no. of epochs to train for')
+    parser.add_argument('--patience', default=1, type=int,
+                        help='patience for early stopping')
     parser.add_argument('--lr', default=2e-5, type=float,
                         help='learning rate')
     parser.add_argument('--dropout', default=0.3, type=float,
@@ -247,7 +257,7 @@ if __name__ == '__main__':
                         help='toggle elaborate torch errors')
     parser.add_argument('--toy_run', default=1.00, type=float,
                         help='proportion of batches used in train/dev/test phase (useful for debugging)')
-    parser.add_argument('--refresh_rate', default=100, type=int,
+    parser.add_argument('--refresh_rate', default=250, type=int,
                         help='how often to refresh progress bar (in steps)')
 
     log_every = 50 if device_count() > 0 else 1

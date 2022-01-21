@@ -12,12 +12,13 @@ import numpy as np
 
 # PyTorch modules
 import torch
+from torch import nn
 from torch.optim import Adam
 from pytorch_lightning.core.lightning import LightningModule
 import torchmetrics
 import transformers
 from transformers import AutoTokenizer
-from transformers import BertForSequenceClassification
+from transformers import BertForSequenceClassification, AutoModelForSequenceClassification, AutoConfig
 from scipy.stats import entropy
 from torchmetrics.functional import accuracy
 import requests
@@ -26,18 +27,37 @@ from src.utils import c_print
 
 
 def get_model(model_id, dropout):
+    """
+    Loads model and tokenizer in try-except block in case of server denials
+    """
+
+    num_labels = 3
+    model_config = AutoConfig.from_pretrained(model_id, num_labels=num_labels, dropout=dropout)
 
     done = False
-
     while done is False:
 
         try:
-            tokenizer = AutoTokenizer.from_pretrained(model_id)
-            model = BertForSequenceClassification.from_pretrained(model_id, # TODO replace str with model arg
-                                                                  num_labels=3,
-                                                                  hidden_dropout_prob=dropout)
+            if model_id == 'bert-base-uncased':
+                tokenizer = AutoTokenizer.from_pretrained(model_id)
+                model = AutoModelForSequenceClassification.from_pretrained(model_id, config=model_config)
 
-            done = True
+                done = True
+
+            elif model_id == 'roberta-base':
+                tokenizer = AutoTokenizer.from_pretrained(model_id)
+                model = AutoModelForSequenceClassification.from_pretrained(model_id, config=model_config)
+
+                done = True
+
+            elif model_id == 'bert-large-uncased':
+                tokenizer = AutoTokenizer.from_pretrained(model_id)
+                model = AutoModelForSequenceClassification.from_pretrained(model_id, config=model_config)
+
+                done = True
+
+            else:
+                raise KeyError('No model found for {}'.format(model_id))
 
         except requests.HTTPError as exception:
             print('Got internal server error. Trying to download model again in 10 seconds..', flush=True)
@@ -51,7 +71,7 @@ class TransformerModel(LightningModule):
     """
     This class implements a Lightning Module for several Transformer-based models.
     """
-    def __init__(self, dropout, lr, model_id, batch_size):
+    def __init__(self, dropout, lr, model_id, batch_size, acquisition_fn, mc_iterations):
         super().__init__()
 
         # transformers.logging.set_verbosity_error()
@@ -59,6 +79,8 @@ class TransformerModel(LightningModule):
         self.lr = lr # learning rate
         self.max_length = 180
         self.batch_size = batch_size
+        self.acquisition_fn = acquisition_fn
+        self.mc_iterations = mc_iterations
 
         # self.accuracy = metrics.Accuracy() # for logging to lightning
         # load pre-trained, uncased, sequence-classification BERT model
@@ -164,6 +186,26 @@ class TransformerModel(LightningModule):
         acc = accuracy(preds, labels)
         return loss, acc
 
+    def predict_step(self, batch, batch_idx):
+
+        if self.acquisition_fn == 'random':
+            return self.active_step(batch, batch_idx)
+
+        elif self.acquisition_fn == 'least-confidence':
+            return self.active_step(batch, batch_idx)
+
+        elif self.acquisition_fn == 'max-entropy':
+            return self.active_step(batch, batch_idx)
+
+        elif self.acquisition_fn == 'mc-max-entropy':
+            return self.mc_step(batch, batch_idx)
+
+        elif self.acquisition_fn == 'bald':
+            return self.bald_step(batch, batch_idx)
+
+        elif self.acquisition_fn == 'coreset':
+            return self.embedding_step(batch, batch_idx)
+
     def active_step(self, batch, batch_idx):
 
         input_ids = batch['input_ids']
@@ -180,6 +222,10 @@ class TransformerModel(LightningModule):
 
         return prediction
 
+    def apply_dropout(self, m):
+        if type(m) == nn.Dropout:
+            m.train()
+
     def mc_step(self, batch, batch_idx):
 
         input_ids = batch['input_ids']
@@ -187,22 +233,34 @@ class TransformerModel(LightningModule):
         attention_masks = batch['attention_masks']
         labels = batch['labels']
 
-        mc_average = []
+        self.encoder.apply(self.apply_dropout)
 
-        for k in range(10):
+        output = torch.vstack([
 
-            output = self(input_ids=input_ids,
-                          attention_masks=attention_masks,
-                          token_type_ids=token_type_ids,
-                          labels=labels)
+            torch.softmax(self(input_ids=input_ids,
+                               attention_masks=attention_masks,
+                               token_type_ids=token_type_ids,
+                               labels=labels).logits,
+                          dim=1).unsqueeze(0) for _ in range(self.mc_iterations)]).mean(dim=0)
 
-            prediction = torch.softmax(output.logits.detach(), dim=1).cpu().numpy()
-            mc_average.append(prediction)
+        return output
 
-        # mc_average is an object of shape k (MC iters) x batch_size x num_classes
-        # our interest is in the mean over the different models, so we average over k, i.e. dim 0
-        # we return an array of shape batch_size x num_classes
-        return np.mean(np.asarray(mc_average), axis=0)
+        # for k in range(10):
+        #
+        #     output = self(input_ids=input_ids,
+        #                   attention_masks=attention_masks,
+        #                   token_type_ids=token_type_ids,
+        #                   labels=labels)
+        #
+        #     prediction = torch.softmax(output.logits.detach(), dim=1).cpu().numpy()
+        #     mc_average.append(prediction)
+        #
+        # print(mc_average)
+        #
+        # # mc_average is an object of shape k (MC iters) x batch_size x num_classes
+        # # our interest is in the mean over the different models, so we average over k, i.e. dim 0
+        # # we return an array of shape batch_size x num_classes
+        # return np.mean(np.asarray(mc_average), axis=0)
 
     def bald_step(self, batch, batch_idx):
 
@@ -211,10 +269,56 @@ class TransformerModel(LightningModule):
         attention_masks = batch['attention_masks']
         labels = batch['labels']
 
+        # re-enable dropout for MC dropout
+        self.encoder.apply(self.apply_dropout)
+
+        # def get_outputs(_input_ids,
+        #                 _attention_masks,
+        #                 _token_type_ids,
+        #                 _labels):
+        #
+        #     single_output = torch.softmax(self(input_ids=_input_ids,
+        #                                        attention_masks=_attention_masks,
+        #                                        token_type_ids=_token_type_ids,
+        #                                        labels=_labels).logits, dim=1)
+        #
+        #     single_prediction = torch.distributions.distribution.Distribution(single_output)
+        #     single_disagreements = single_prediction.entropy()
+        #
+        #     return single_prediction.numpy(), single_disagreements.numpy()
+        #
+        # for _ in range(self.mc_iterations):
+        #
+        #     prediction, disagreement = get_outputs(_input_ids=input_ids,
+        #                                            _attention_masks=attention_masks,
+        #                                            _token_type_ids=token_type_ids,
+        #                                            _labels=labels)
+        #     predictions.append(prediction)
+        #     disagreements.append(disagreement)
+        #
+        # entropies = entropy(np.mean(predictions, axis=0), axis=1)
+        # disagreements = np.mean(disagreements, axis=0)
+        # return list(entropies - disagreements)
+
+        # mc_output = [get_outputs(_input_ids=input_ids,
+        #                          _attention_masks=attention_masks,
+        #                          _token_type_ids=token_type_ids,
+        #                          _labels=labels) for _ in range(self.mc_iterations)]
+        #
+        # # output = [get_outputs(batch) for _ in range(self.mc_iterations)]
+        #
+        # output = torch.vstack([
+        #
+        #     torch.softmax(self(input_ids=input_ids,
+        #                        attention_masks=attention_masks,
+        #                        token_type_ids=token_type_ids,
+        #                        labels=labels).logits,
+        #                   dim=1).unsqueeze(0) for _ in range(self.mc_iterations)]).mean(dim=0)
+
         predictions = []
         disagreements = []
 
-        for k in range(10):
+        for _ in range(self.mc_iterations):
 
             output = self(input_ids=input_ids,
                           attention_masks=attention_masks,
@@ -229,7 +333,7 @@ class TransformerModel(LightningModule):
         # Compute Entropy of Average
         entropies = entropy(np.mean(predictions, axis=0), axis=1)
         disagreements = np.mean(disagreements, axis=0)
-        return list(entropies - disagreements)
+        return entropies - disagreements
 
     def embedding_step(self, batch, batch_idx):
 
@@ -246,3 +350,4 @@ class TransformerModel(LightningModule):
         embedding = output.hidden_states[-1][:, 0, :].detach().unsqueeze(1).cpu().numpy()
 
         return embedding
+

@@ -18,7 +18,7 @@ from src.utils import c_print
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
-def downsample(dataset, dataset_id, downsample_rate):
+def downsample(dataset, dataset_id, downsample_rate, seed):
     """
     This function takes a dataframe and downsamples it according to a provided percentage
     :return: downsampled dataframe
@@ -29,10 +29,10 @@ def downsample(dataset, dataset_id, downsample_rate):
     # c_print(f"{'Down-sampling {}% from {}:'.format(100*downsample_rate, dataset_id):<30}"
     #       f"{'from {} to {} examples'.format(size_old, sample_size):<32}", flush=True)
 
-    return dataset.sample(sample_size)
+    return dataset.sample(sample_size, random_state=seed)
 
 
-def read_dataset(input_dir, dataset_id, split, downsample_rate):
+def read_dataset(input_dir, dataset_id, split, downsample_rate, seed):
     """
     This function takes a dataset id and reads the corresponding .json split in an appropriate Pandas DataFrame
     :param downsample_rate:
@@ -58,10 +58,23 @@ def read_dataset(input_dir, dataset_id, split, downsample_rate):
         dataset['dataset'] = 'SNLI'
         dataset = dataset.drop(dataset[dataset.gold_label.str.contains('-')].index)  # drop examples with no gold label
 
+        # downsample dataset if required
+        if 0 < downsample_rate < 1.0:  # and split == 'train':
+            dataset = downsample(dataset,
+                                 dataset_id,
+                                 downsample_rate,
+                                 seed)
+
+        if downsample_rate >= 0.25:
+            if split == 'dev':
+                dataset = dataset.sample(1000, random_state=seed)
+            elif split == 'test':
+                dataset = dataset.sample(1000, random_state=seed)
+
     elif dataset_id == 'ANLI':
 
         anli_dfs = []  # TODO think about how I want to implement logic for multiple rounds
-        for data_round in ['R1', 'R2', 'R3']:
+        for data_round in ['R1']:#, 'R2', 'R3']:
             data_path = '{}/anli_v1.0/{}/{}.jsonl'.format(input_dir, data_round, split)
             anli_dataset = pd.read_json(data_path, lines=True)
             anli_dataset = anli_dataset[['context', 'hypothesis', 'label', 'uid']]  # get rid of unnecessary columns
@@ -75,16 +88,27 @@ def read_dataset(input_dir, dataset_id, split, downsample_rate):
 
         if split == 'train':
             data_path = '{}/multinli_1.0/multinli_1.0_{}.jsonl'.format(input_dir, split)
-        elif split == 'dev':
-            data_path = '{}/multinli_1.0/multinli_1.0_{}_matched.jsonl'.format(input_dir, split)
-        elif split == 'test':
-            #TODO no test set available for MNLI!
-            return None
+        elif split == 'dev' or split == 'test': #TODO no test set available for MNLI!
+            data_path = '{}/multinli_1.0/multinli_1.0_dev_matched.jsonl'.format(input_dir)
 
         dataset = pd.read_json(data_path, lines=True)
         dataset = dataset[['sentence1', 'sentence2', 'gold_label', 'pairID']]
         dataset['dataset'] = 'MNLI'
         dataset = dataset.drop(dataset[dataset.gold_label.str.contains('-')].index)
+
+        # downsample dataset if required
+        if 0 < downsample_rate < 1.0:  # and split == 'train':
+            dataset = downsample(dataset,
+                                 dataset_id,
+                                 downsample_rate,
+                                 seed)
+
+        if downsample_rate >= 0.25:
+            if split == 'dev':
+                dataset = dataset[:int((len(dataset)/2))].sample(1000, random_state=seed)
+            elif split == 'test':
+                dataset = dataset[int((len(dataset)/2)):].sample(1000, random_state=seed)
+
 
     # elif dataset_id == 'FEVER':
     #
@@ -95,31 +119,33 @@ def read_dataset(input_dir, dataset_id, split, downsample_rate):
     #     dataset = pd.read_json(data_path, lines=True)
     #     dataset = dataset[['context', 'query', 'label', 'fid']]
 
+    # # for full experiments we construct a dev and test set with 1000 random examples from each dataset
+    # if downsample_rate >= 0.5 and split == 'dev' or split == 'test':
+    #     dataset = dataset.sample(2000, random_state=seed)
+    #     if split == 'dev':
+    #         dataset = dataset[:1000]
+    #     elif split == 'test':
+
     else:
         raise KeyError('No dataset found for "{}"'.format(dataset_id))
 
     # ensure consistent headers per dataset DataFrame
     dataset.columns = ['Premise', 'Hypothesis', 'Label', 'ID', 'Dataset']
 
-    # downsample dataset if required
-    if 0 < downsample_rate < 1.0 and split == 'train':
-        dataset = downsample(dataset,
-                             dataset_id,
-                             downsample_rate)
-
     c_print(f"{'{} {} size:'.format(dataset_id, split):<30}{len(dataset):<32}", flush=True)
 
     return dataset
 
 
-def combine_datasets(input_dir, datasets, split, downsample_rate):
+def combine_datasets(input_dir, datasets, split, downsample_rate, seed):
     """
     This function takes a list of NLI dataset names and
     concatenates all examples from each corresponding dataset
     for the provided data split (train/dev/test) into a single multi-dataset.
 
-    :param downsample_rate:
-    :param input_dir:
+    :param seed: random seed for reproducibility during sampling
+    :param downsample_rate: value between 0 and 1, if we want to sample a subset of the data
+    :param input_dir: SCRATCH dir where data files are read
     :param datasets: list with dataset names
     :param split: string indicating data split of interest
     :return: DataFrame with examples and labels for all datasets for split of interest
@@ -127,7 +153,7 @@ def combine_datasets(input_dir, datasets, split, downsample_rate):
 
     # If we only consider a single dataset, we can just read and return it
     if len(datasets) == 1:
-        return read_dataset(input_dir, datasets[0], split, downsample_rate)
+        return read_dataset(input_dir, datasets[0], split, downsample_rate, seed)
 
     # If we consider multiple datasets we have to combine them into a single dataset
 
@@ -136,7 +162,7 @@ def combine_datasets(input_dir, datasets, split, downsample_rate):
 
     # 2. load individual datasets and append to list
     for dataset_id in datasets:
-        dataset = read_dataset(input_dir, dataset_id, split, downsample_rate)
+        dataset = read_dataset(input_dir, dataset_id, split, downsample_rate, seed)
 
         # 3. add dataset to multi-dataset
         dataset_list.append(dataset)
@@ -174,11 +200,16 @@ class DataPool(Dataset):
         self.downsample_rate = config.downsample_rate
         self.max_length = config.max_length
         self.model_id = config.model_id
+        self.random_seed = config.seed
 
         if split == 'train':
 
             # first, we combine multiple NLI datasets into a single dataset and compile them in unlabeled pool U
-            self.U = combine_datasets(self.input_dir, self.datasets, split, self.downsample_rate)
+            self.U = combine_datasets(input_dir=self.input_dir,
+                                      datasets=self.datasets,
+                                      split=split,
+                                      downsample_rate=self.downsample_rate,
+                                      seed=self.random_seed)
             # label k samples randomly and put them in labeled pool L
             self.L = self.label_instances_randomly(k=self.seed_size)
 
@@ -187,7 +218,11 @@ class DataPool(Dataset):
         else:
 
             # for dev and test we assume that all the data is labelled, so everything is passed to L
-            self.L = combine_datasets(self.input_dir, self.datasets, split, self.downsample_rate)
+            self.L = combine_datasets(input_dir=self.input_dir,
+                                      datasets=self.datasets,
+                                      split=split,
+                                      downsample_rate=self.downsample_rate,
+                                      seed=self.random_seed)
 
         self.data = self.L
         self.label2id = {"entailment": 0,
@@ -296,10 +331,42 @@ class DataPool(Dataset):
         # TODO: can I come up with a nice mechanism for making sure that no mistakes are made when moving samples
         # TODO: from the labeled to unlabeled sets?
 
+        # TODO: check that len(indices) = len(U). This should always be the case!
+        # TODO: if we load another dataset first, do we see that all AL methods favour that dataset instead?
+        #  Then there's clearly a bug in the labelling code
+        # TODO: print self.U and ensure that it actually contains examples from all datasets?
+        # TODO: I assume that the data enters the inference process unshuffled,
+        #  and exits the inference process unshuffled. but maybe this is not the case?
+
         if len(indices) > len(self.U):
+            sys.exit()
             indices = indices[:len(self.U)]
 
+        # print('indice length:', flush=True)
+        # print(len(indices))
+        #
+        # print('first 10 indices', flush=True)
+        # print(indices[:10])
+        #
+        # print('last 10 indices', flush=True)
+        # print(indices[-10:])
+
+        # print('first 10 examples in self.U', flush=True)
+        # print(self.U.head(5))
+        #
+        # print('last 10 examples in self.U', flush=True)
+        # print(self.U.tail(5))
+
+
         new_examples = self.U.iloc[indices]  # Take examples from unlabelled pool
+
+
+        # print('first 5 examples of new examples', flush=True)
+        # print(new_examples.head(5))
+        #
+        # print('last 5 examples of new examples', flush=True)
+        # print(new_examples.tail(5))
+
         self.L = self.L.append(new_examples).reset_index(drop=True)  # Add them to the labelled pool
         self.U = self.U.drop(new_examples.index).reset_index(drop=True)  # Remove examples from unlabelled pool
         self.assert_validity()  # check whether U and L are disjoint and whether all indices are unique
@@ -325,8 +392,6 @@ class DataPool(Dataset):
         # assert that both datasets still add up to original no. of examples
         assert len(self.U) + len(self.L) == self.total_size
         return None
-
-
 
 
 class GenericDataModule(pl.LightningDataModule):
@@ -443,13 +508,14 @@ class GenericDataModule(pl.LightningDataModule):
                           num_workers=self.config.num_workers,
                           pin_memory=self.pin_memory)
 
-    def unlabelled_dataloader(self):
+    def unlabelled_dataloader(self, batch_size=None):
 
+        batch_size = self.config.batch_size if batch_size is None else batch_size
         self.train.set_mode('U')
         return DataLoader(self.train,
                           collate_fn=self.batch_tokenize,
                           shuffle=False,
-                          batch_size=self.config.batch_size,
+                          batch_size=batch_size,
                           num_workers=self.config.num_workers,
                           pin_memory=self.pin_memory)
 
