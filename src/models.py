@@ -23,7 +23,9 @@ from scipy.stats import entropy
 from torchmetrics.functional import accuracy
 import requests
 import time
-from src.utils import c_print
+
+
+from pytorch_lightning.utilities import rank_zero_only
 
 
 def get_model(model_id, dropout):
@@ -71,16 +73,19 @@ class TransformerModel(LightningModule):
     """
     This class implements a Lightning Module for several Transformer-based models.
     """
-    def __init__(self, dropout, lr, model_id, batch_size, acquisition_fn, mc_iterations):
+    def __init__(self, dropout, lr, model_id, batch_size, acquisition_fn, mc_iterations, num_gpus):
         super().__init__()
+        self.save_hyperparameters()
 
         # transformers.logging.set_verbosity_error()
         self.dropout = dropout # dropout applied to BERT
-        self.lr = lr # learning rate
+        self.lr = lr  # learning rate
         self.max_length = 180
         self.batch_size = batch_size
         self.acquisition_fn = acquisition_fn
         self.mc_iterations = mc_iterations
+        self.predictions = None
+        self.num_gpus = num_gpus
 
         # self.accuracy = metrics.Accuracy() # for logging to lightning
         # load pre-trained, uncased, sequence-classification BERT model
@@ -92,7 +97,7 @@ class TransformerModel(LightningModule):
         self.encoder = None
 
     def configure_optimizers(self):
-        "This method handles optimization of params for PyTorch lightning"
+        """This method handles optimization of params for PyTorch lightning"""
         return Adam(self.parameters(), lr=self.lr)
 
     def forward(self, input_ids, attention_masks, token_type_ids, labels):
@@ -206,21 +211,71 @@ class TransformerModel(LightningModule):
         elif self.acquisition_fn == 'coreset':
             return self.embedding_step(batch, batch_idx)
 
+    def on_predict_epoch_end(self, results):
+
+        """
+        The predictions are currently in a list of shape [num_batches x world_size x batch_size x num_classes]
+        The problem is that each gathered tensor contains a batch belonging to the first, second and third GPU.
+        But how do I know in what order I should put these different tensors to ensure that the order is the same
+        as the way they were fed?
+
+        One thing I can try is to run one experiment on 3 GPUs, and print all the predictions.
+        Then run the same experiment on a single GPU and print those predictions.
+        And then see what order they are in, and whether this is consistent.
+
+        Thankfully, it appears that across runs with the same seeds, the logits are the same.
+
+        To verify:
+        - are the logits the same irrespective of whether I run on a single GPU, or on 3 GPUs?
+        - what order are the different GPU tensors in?
+        - what is a good way of re-ordering the per-gpu tensors?
+        """
+        # since DDP divides the data among different GPUs, we need to 're-unite' their predictions after inference
+        # self.all_gather gathers the predictions from separate gpu processes.
+        # >>> list of length num_batches where each elem is a tensor of Size ([world_size, batch_size, num_classes])
+        print('finished inference, awaiting gather')
+
+        predictions = self.all_gather(data=results)[0]
+
+        # iterate over list of multi-gpu tensors
+        ordered_predictions = []
+        for multi_gpu_tensor in predictions:
+            # split multi-gpu tensor into list of single-gpu tensors
+            split_tensors = torch.tensor_split(multi_gpu_tensor, self.num_gpus, dim=0)  # TODO replace 3 with a config gpu arg
+            # remove implicit first dimension
+            split_tensors = [tensor.squeeze(0) for tensor in split_tensors]
+            # concatenate single-gpu tensors along batch dimension and append to list
+            ordered_predictions.append(torch.cat(split_tensors, dim=0))
+
+        # concatenate list of tensors along batch dimension once more
+        predictions = torch.cat(ordered_predictions, dim=0)
+        print(predictions.size()) # should return torch.Size([<num_batches x world_size x batch_size>, 3])
+        # >>> torch.Size([17532, 3])
+
+        # if predictions.size()
+
+        print('finished gather operation')
+
+        self.predictions = predictions.cpu()
+
+        return None
+
     def active_step(self, batch, batch_idx):
 
         input_ids = batch['input_ids']
         token_type_ids = batch['token_type_ids']
         attention_masks = batch['attention_masks']
         labels = batch['labels']
+        ids = batch['ids']
 
         output = self(input_ids=input_ids,
                       attention_masks=attention_masks,
                       token_type_ids=token_type_ids,
                       labels=labels)
 
-        prediction = torch.softmax(output.logits.detach(), dim=1).cpu().numpy()
+        prediction = torch.softmax(output.logits.detach(), dim=1)
 
-        return prediction
+        return prediction #, ids
 
     def apply_dropout(self, m):
         if type(m) == nn.Dropout:

@@ -9,15 +9,8 @@ import gc
 import torch
 from pytorch_lightning import Trainer
 from pytorch_lightning.utilities import rank_zero_only
-from pytorch_lightning.callbacks import EarlyStopping
-
-
-def collect_garbage():
-    garbage_collection_cuda()
-    time.sleep(5)
-    torch.cuda.empty_cache()
-    garbage_collection_cuda()
-    gc.collect()
+from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
+import os
 
 
 # TODO put this in a Logger class
@@ -32,9 +25,10 @@ def log_results(logger, results, dm):
     return None
 
 
-def get_trainer(config, logger, batch_size=None):
+def get_trainer(config, logger, batch_size=None, gpus=None):
     """
     Factory for building trainer object
+    :param gpus:
     :param config:
     :param logger:
     :param batch_size:
@@ -42,26 +36,47 @@ def get_trainer(config, logger, batch_size=None):
     """
 
     if config.debug is False:
-        early_stopping_callback = [EarlyStopping(monitor="val_loss",
-                                                 min_delta=0.00,
-                                                 patience=config.patience,
-                                                 verbose=False,
-                                                 mode="min")]
+
+        mode = None
+        if config.monitor == 'val_loss':
+            mode = "min"
+        elif config.monitor == 'val_acc':
+            mode = "max"
+
+        # Init early stopping
+        early_stopping_callback = EarlyStopping(monitor="val_loss",
+                                                min_delta=0.00,
+                                                patience=config.patience,
+                                                verbose=True,
+                                                mode=mode)
+
+        # Init ModelCheckpoint callback, monitoring 'val_loss'
+        checkpoint_callback = ModelCheckpoint(monitor="val_loss",
+                                              mode=mode,
+                                              save_top_k=1,
+                                              dirpath=config.checkpoint_dir,
+                                              filename='{epoch}-{val_loss:.2f}-{val_acc:.2f}',
+                                              verbose=True)
+
+        callbacks = [early_stopping_callback, checkpoint_callback]
         epochs = config.max_epochs
 
     else:
-        early_stopping_callback = None
+        callbacks = None
         epochs = 1
 
-    trainer = Trainer(gpus=config.gpus,
+    if gpus is None:
+        gpus = config.gpus
+
+    trainer = Trainer(gpus=gpus,
                       strategy=config.strategy,
                       logger=logger,
-                      callbacks=early_stopping_callback,
+                      callbacks=callbacks,
                       log_every_n_steps=config.log_every,
                       accelerator=config.accelerator,
                       max_epochs=epochs,
                       deterministic=True,
-                      enable_checkpointing=False,
+                      enable_checkpointing=True,
                       enable_model_summary=False,
                       # profiler="simple",
                       num_sanity_val_steps=0,
@@ -70,7 +85,8 @@ def get_trainer(config, logger, batch_size=None):
                       limit_test_batches=config.toy_run,
                       progress_bar_refresh_rate=config.refresh_rate,
                       enable_progress_bar=True,
-                      auto_scale_batch_size="binsearch")
+                      auto_scale_batch_size="binsearch",
+                      precision=config.precision)
 
     return trainer
 
@@ -110,7 +126,31 @@ def log_percentages(mode, new_indices, logger, dm, epoch):
     return None
 
 
-@rank_zero_only
-def c_print(*args, **kwargs):
+def del_checkpoint(filepath):
 
-    return print(*args, **kwargs)
+    try:
+        os.remove(filepath)
+        print('Removed checkpoint at {}!'.format(filepath), flush=True)
+
+    except Exception:
+        pass
+
+
+def cleanup():
+
+    torch.distributed.destroy_process_group()
+
+
+def collect_garbage():
+
+    garbage_collection_cuda()
+    time.sleep(5)
+    torch.cuda.empty_cache()
+    garbage_collection_cuda()
+    gc.collect()
+
+
+# @rank_zero_only
+# def print(*args, **kwargs):
+#
+#     return print(*args, **kwargs)

@@ -20,23 +20,26 @@ from pytorch_lightning.strategies import DDPStrategy
 from src.models import TransformerModel
 from src.datasets import GenericDataModule
 from src.strategies import select_acquisition_fn
-from src.utils import log_results, c_print, log_percentages, get_trainer
+from src.utils import log_results, log_percentages, get_trainer, del_checkpoint, cleanup
+from src.active import active
 
 logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
 logging.getLogger("transformers").setLevel(logging.WARNING)
 warnings.filterwarnings("ignore", ".*does not have many workers.*")
 warnings.filterwarnings("ignore", "Some weights of the model checkpoint")
 os.environ["WANDB_SILENT"] = "true"
+os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
+os.environ["NCCL_BLOCKING_WAIT"] = "1"
 wandb.login()
 
 
 def main(args):
 
-    c_print('\n -------------- Active Learning -------------- \n')
+    print('\n -------------- Active Learning -------------- \n')
     # print CLI args
-    c_print('Arguments: ')
+    print('Arguments: ')
     for arg in vars(args):
-        c_print(str(arg) + ': ' + str(getattr(args, arg)))
+        print(str(arg) + ': ' + str(getattr(args, arg)))
 
     # Set global seed
     seed_everything(config.seed, workers=True)
@@ -44,9 +47,9 @@ def main(args):
         torch.autograd.set_detect_anomaly(True)
 
     if config.toy_run != 1.0:
-        c_print('\nNOTE: TOY RUN - ONLY USING {}% OF DATA\n'.format(config.toy_run*100), flush=True)
+        print('\nNOTE: TOY RUN - ONLY USING {}% OF DATA\n'.format(config.toy_run*100), flush=True)
     if config.downsample_rate != 1.0:
-        c_print('\nNOTE: DOWN-SAMPLING - ONLY CONSIDERING {}% OF DATA\n'.format(config.downsample_rate * 100), flush=True)
+        print('\nNOTE: DOWN-SAMPLING - ONLY CONSIDERING {}% OF DATA\n'.format(config.downsample_rate * 100), flush=True)
 
     # --------------------------------------- Active learning: Seed phase ---------------------------------------------
     # Build datamodule
@@ -75,20 +78,21 @@ def main(args):
     # TODO: abstract this code away into an active learner class, or...
     # TODO: wrap all of this in a function call such that everything gets cleaned up afterwards?
 
-    c_print('\nStarting Active Learning process with strategy: {}'.format(config.acquisition_fn))
+    print('\nStarting Active Learning process with strategy: {}'.format(config.acquisition_fn))
     config.labelling_batch_size = dm.train.set_k(config.labelling_batch_size)
     for i in range(config.iterations):
 
-        c_print('Active Learning iteration: {}\n'.format(i), flush=True)
+        print('Active Learning iteration: {}\n'.format(i+1), flush=True)
 
-        # -----------------------------------  Fitting model on current labelled dataset ------------------------------
-        # initialise model
+        # ---------------------------------- Training model on current labelled dataset ------------------------------
         model = TransformerModel(model_id=config.model_id,
                                  dropout=config.dropout,
                                  lr=config.lr,
                                  batch_size=config.batch_size,
                                  acquisition_fn=config.acquisition_fn,
-                                 mc_iterations=config.mc_iterations)
+                                 mc_iterations=config.mc_iterations,
+                                 num_gpus=config.gpus)
+
         # initialise trainer
         trainer = get_trainer(config=config,
                               logger=logger)
@@ -97,31 +101,29 @@ def main(args):
         labelled_loader = dm.labelled_dataloader()
         val_loader = dm.val_dataloader()
 
-        # fine-tune model on updated labelled dataset L, from scratch
-        c_print('\nFitting model on updated labelled pool, from scratch', flush=True)
+        # fine-tune model on (updated) labelled dataset L, from scratch
+        print('\nFitting model on updated labelled pool, from scratch', flush=True)
         trainer.fit(model=model,
                     train_dataloaders=labelled_loader,
-                    val_dataloaders=val_loader)  # fit on labelled data
+                    val_dataloaders=val_loader)
 
-        # evaluate and log results for current examples
+        # -------------------------------  Evaluating model on current labelled dataset ------------------------------
+        # load model chkpt with best dev accuracy and evaluate
+        # we have to evaluate again since trainer.fit doesn't return any dev statistics :(
+        if config.debug is False:
+            print('Loading checkpoint: {}'.format(trainer.checkpoint_callback.best_model_path))
+            model = TransformerModel.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
         results = trainer.validate(model, val_loader)
         log_results(logger=wandb,
                     results=results,
                     dm=dm)
 
-        # ----------------------------------- Acquiring new instances for labeling -----------------------------------
-        # set training dataset mode to access the unlabelled data
-        dm.train.set_mode('U')
+        # ------------------------------------ Acquiring new instances for labeling ----------------------------------
+        # # set training dataset mode to access the unlabelled data
+        # dm.train.set_mode('U')
 
         # initialise acquisition function
         acquisition_fn = select_acquisition_fn(fn_id=config.acquisition_fn)
-
-        if len(dm.train.U) == 0:
-            c_print('All examples were labelled. Terminating Active Learning Loop...')
-            break
-
-        if config.labelling_batch_size > len(dm.train.U):
-            config.labelling_batch_size = len(dm.train.U)
 
         # determine instances for labeling using provided acquisition fn
         to_be_labelled = acquisition_fn.acquire_instances(config=config,
@@ -129,7 +131,7 @@ def main(args):
                                                           dm=dm,
                                                           k=config.labelling_batch_size)
 
-        # log share of each dataset in queried examples
+        # log share of each dataset in set of queried examples
         log_percentages(mode='active',
                         new_indices=to_be_labelled,
                         logger=wandb,
@@ -139,20 +141,25 @@ def main(args):
         # label new instances
         dm.train.label_instances(to_be_labelled)
 
-        # log makeup of updated labelled pool
+        # log composition of updated labelled pool
         log_percentages(mode='makeup',
                         new_indices=None,
                         logger=wandb,
                         dm=dm,
                         epoch=None)
 
-        # some extra precautions to prevent memory leaks
+        # delete checkpoints
+        if config.debug is False:
+            del_checkpoint(trainer.checkpoint_callback.best_model_path)
+
         del model
         del trainer
         del acquisition_fn
         del labelled_loader
         del val_loader
         gc.collect()
+
+        # some extra precautions to prevent memory leaks
 
     # --------------------------------------------- Testing final model --------------------------------------------- #
     # initialise final model
@@ -161,7 +168,8 @@ def main(args):
                              lr=config.lr,
                              batch_size=config.batch_size,
                              acquisition_fn=config.acquisition_fn,
-                             mc_iterations=config.mc_iterations)
+                             mc_iterations=config.mc_iterations,
+                             num_gpus=config.gpus)
 
     trainer = get_trainer(config=config,
                           logger=logger)
@@ -172,12 +180,14 @@ def main(args):
     test_loader = dm.test_dataloader()
 
     # fine-tune model on final labelled dataset L, from scratch
-    c_print('\nFitting model on updated labelled pool, from scratch', flush=True)
+    print('\nFitting model on updated labelled pool, from scratch', flush=True)
     trainer.fit(model=model,
                 train_dataloaders=labelled_loader,
-                val_dataloaders=val_loader)  # fit on labelled data
+                val_dataloaders=val_loader)
 
     # evaluate on test set and log statistics
+    if config.debug is False:
+        model = TransformerModel.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
     results = trainer.test(model, test_loader)
     log_results(logger=wandb,
                 results=results,
@@ -193,6 +203,9 @@ if __name__ == '__main__':
                         help='specifies where to read datasets from scratch disk')
     parser.add_argument('--output_dir', default=None, type=str,
                         help='specifies where on scratch disk output should be stored')
+    parser.add_argument('--checkpoint_dir', default=None, type=str,
+                        help='specifies where on SCRATCH model checkpoints should be saved')
+
     parser.add_argument('--uid', default=None, type=str,
                         help='unique ID of array job. useful for grouping multiple runs in wandb')
 
@@ -206,6 +219,7 @@ if __name__ == '__main__':
                              'Choose from:'
                              'bert-base-uncased'
                              'bert-large-uncased')
+
     parser.add_argument('--acquisition_fn', default='coreset', type=str,
                         help='specifies which acquisition function is used for pool-based active learning')
     parser.add_argument('--mc_iterations', default=4, type=int,
@@ -229,9 +243,12 @@ if __name__ == '__main__':
                         help='no. of sentences sampled per pass')
     parser.add_argument('--max_epochs', default=10, type=int,
                         help='no. of epochs to train for')
-    parser.add_argument('--patience', default=1, type=int,
+    parser.add_argument('--patience', default=3, type=int,
                         help='patience for early stopping')
-    parser.add_argument('--lr', default=2e-5, type=float,
+    parser.add_argument('--monitor', default='val_loss', type=str,
+                        help='quantity monitored by early stopping / checkpointing callbacks.'
+                             'choose between "val_loss" and "val_acc"')
+    parser.add_argument('--lr', default=5e-6, type=float,
                         help='learning rate')
     parser.add_argument('--dropout', default=0.3, type=float,
                         help='hidden layer dropout prob')
@@ -240,7 +257,7 @@ if __name__ == '__main__':
 
     # Lightning Trainer - distributed training args
     num_gpus = device_count() if device_count() > 0 else None
-    parser.add_argument('--gpus', default=num_gpus)
+    parser.add_argument('--gpus', default=num_gpus, type=int)
 
     strategy = DDPStrategy(find_unused_parameters=False) if device_count() > 1 else None
     parser.add_argument('--strategy', default=strategy)
@@ -251,6 +268,9 @@ if __name__ == '__main__':
     num_workers = 3 if device_count() > 0 else 1  # TODO this may or may not lead to some speed bottlenecks
     parser.add_argument('--num_workers', default=num_workers, type=int,
                         help='no. of workers for DataLoaders')
+
+    parser.add_argument('--precision', default=32, type=int,
+                        help='sets floating point precision')
 
     # Auxiliary args
     parser.add_argument('--debug', default=False, type=bool,

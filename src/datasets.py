@@ -13,7 +13,7 @@ from transformers import DataCollatorWithPadding
 import sys
 import numpy as np
 import os
-from src.utils import c_print
+
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -26,7 +26,7 @@ def downsample(dataset, dataset_id, downsample_rate, seed):
 
     size_old = len(dataset)
     sample_size = int(downsample_rate * size_old)
-    # c_print(f"{'Down-sampling {}% from {}:'.format(100*downsample_rate, dataset_id):<30}"
+    # print(f"{'Down-sampling {}% from {}:'.format(100*downsample_rate, dataset_id):<30}"
     #       f"{'from {} to {} examples'.format(size_old, sample_size):<32}", flush=True)
 
     return dataset.sample(sample_size, random_state=seed)
@@ -132,7 +132,7 @@ def read_dataset(input_dir, dataset_id, split, downsample_rate, seed):
     # ensure consistent headers per dataset DataFrame
     dataset.columns = ['Premise', 'Hypothesis', 'Label', 'ID', 'Dataset']
 
-    c_print(f"{'{} {} size:'.format(dataset_id, split):<30}{len(dataset):<32}", flush=True)
+    print(f"{'{} {} size:'.format(dataset_id, split):<30}{len(dataset):<32}", flush=True)
 
     return dataset
 
@@ -170,11 +170,11 @@ def combine_datasets(input_dir, datasets, split, downsample_rate, seed):
     # 4. combine individual datasets into single dataset
     combined_dataset = pd.concat(dataset_list, axis=0)
 
-    # reset index
+    # reset index and assign to ID column
     combined_dataset = combined_dataset.reset_index(drop=True)
     combined_dataset.ID = combined_dataset.index
 
-    c_print(f"{'Total {} size:'.format(split):<30}{len(combined_dataset):<32}", '\n', flush=True)
+    print(f"{'Total {} size:'.format(split):<30}{len(combined_dataset):<32}", '\n', flush=True)
 
     return combined_dataset
 
@@ -238,7 +238,7 @@ class DataPool(Dataset):
             try:
                 self.data.iloc[index]
             except IndexError:
-                c_print(index, flush=True)
+                print(index, flush=True)
                 sys.exit()
 
         catch_index_error(index=idx)
@@ -246,13 +246,14 @@ class DataPool(Dataset):
         if torch.is_tensor(idx):
             idx = idx.tolist()
 
-        premise, hypothesis, label, _, _ = self.data.iloc[idx]
+        premise, hypothesis, label, id, _ = self.data.iloc[idx]
 
         label = self.label2id[label]
 
         sample = {'premise': premise,
                   'hypothesis': hypothesis,
-                  'label': label}
+                  'label': label,
+                  'id': id}
 
         return sample
 
@@ -302,7 +303,7 @@ class DataPool(Dataset):
         k = self.set_k(k)
         self.U = self.U.reset_index(drop=True)
 
-        c_print('Drawing {} random samples from unlabelled set U for labelled seed set L..'.format(k), flush=True)
+        print('Drawing {} random samples from unlabelled set U for labelled seed set L..'.format(k), flush=True)
 
         # initialize empty seed dataset L
         L = pd.DataFrame(columns=self.U.columns)
@@ -315,8 +316,8 @@ class DataPool(Dataset):
         labelled_examples = self.U.iloc[random_indices]
         L = L.append(labelled_examples).reset_index(drop=True)
         self.U = self.U.drop(labelled_examples.index).reset_index(drop=True)
-        c_print(f"{'Total size unlabelled pool:':<30}{len(self.U):<32}")
-        c_print(f"{'Total size labelled pool:':<30}{len(L):<32}")
+        print(f"{'Total size unlabelled pool:':<30}{len(self.U):<32}")
+        print(f"{'Total size labelled pool:':<30}{len(L):<32}")
 
         return L
 
@@ -339,17 +340,16 @@ class DataPool(Dataset):
         #  and exits the inference process unshuffled. but maybe this is not the case?
 
         if len(indices) > len(self.U):
-            sys.exit()
             indices = indices[:len(self.U)]
 
-        # print('indice length:', flush=True)
-        # print(len(indices))
-        #
-        # print('first 10 indices', flush=True)
-        # print(indices[:10])
-        #
-        # print('last 10 indices', flush=True)
-        # print(indices[-10:])
+        print('indice length:', flush=True)
+        print(len(indices))
+
+        print('first 10 indices', flush=True)
+        print(indices[:10])
+
+        print('last 10 indices', flush=True)
+        print(indices[-10:])
 
         # print('first 10 examples in self.U', flush=True)
         # print(self.U.head(5))
@@ -357,9 +357,7 @@ class DataPool(Dataset):
         # print('last 10 examples in self.U', flush=True)
         # print(self.U.tail(5))
 
-
         new_examples = self.U.iloc[indices]  # Take examples from unlabelled pool
-
 
         # print('first 5 examples of new examples', flush=True)
         # print(new_examples.head(5))
@@ -370,9 +368,11 @@ class DataPool(Dataset):
         self.L = self.L.append(new_examples).reset_index(drop=True)  # Add them to the labelled pool
         self.U = self.U.drop(new_examples.index).reset_index(drop=True)  # Remove examples from unlabelled pool
         self.assert_validity()  # check whether U and L are disjoint and whether all indices are unique
-        c_print('Labelled {} new instances'.format(len(new_examples)), flush=True)
-        c_print(f"{'Total size unlabelled pool:':<30}{len(self.U):<32}", flush=True)
-        c_print(f"{'Total size labelled pool:':<30}{len(self.L):<32}", flush=True)
+        print('Labelled {} new instances'.format(len(new_examples)), flush=True)
+        print(f"{'Total size unlabelled pool:':<30}{len(self.U):<32}", flush=True)
+        print(f"{'Total size labelled pool:':<30}{len(self.L):<32}", flush=True)
+
+        print('finished labelling part')
 
         return None
 
@@ -422,8 +422,10 @@ class GenericDataModule(pl.LightningDataModule):
         premises = [sample['premise'] for sample in batch]
         hypotheses = [sample['hypothesis'] for sample in batch]
         labels = [sample['label'] for sample in batch]
+        ids = [sample['id'] for sample in batch]
 
         labels = torch.tensor(labels)
+        ids = torch.tensor(ids)
 
         # tokenize sentence and convert to sequence of ids
         tokenized_input_seq_pairs = self.tokenizer.__call__(text=premises,
@@ -445,7 +447,8 @@ class GenericDataModule(pl.LightningDataModule):
         padded_batch = {'input_ids': input_ids,
                         'token_type_ids': token_type_ids,
                         'attention_masks': attention_masks,
-                        'labels': labels}
+                        'labels': labels,
+                        'ids': ids}
 
         return padded_batch
 
@@ -453,12 +456,12 @@ class GenericDataModule(pl.LightningDataModule):
 
         if stage == 'fit':
 
-            c_print('\nBuilding train pool..', flush=True)
+            print('\nBuilding train pool..', flush=True)
             if self.train is None:
                 self.train = DataPool(config=self.config,
                                       split='train', )
 
-            c_print('\nBuilding dev and test sets..', flush=True)
+            print('\nBuilding dev and test sets..', flush=True)
             if self.val is None:
                 self.val = DataPool(config=self.config,
                                     split='dev')
@@ -469,7 +472,7 @@ class GenericDataModule(pl.LightningDataModule):
         if stage == 'test':
             pass
 
-        c_print('Done building datasets!', flush=True)
+        print('Done building datasets!', flush=True)
 
     def train_dataloader(self):
 
@@ -478,7 +481,8 @@ class GenericDataModule(pl.LightningDataModule):
                           shuffle=True,
                           batch_size=self.config.batch_size,
                           num_workers=self.config.num_workers,
-                          pin_memory=self.pin_memory)
+                          pin_memory=self.pin_memory,
+                          drop_last=True)
 
     def val_dataloader(self):
 
@@ -487,7 +491,8 @@ class GenericDataModule(pl.LightningDataModule):
                           shuffle=False,
                           batch_size=self.config.batch_size,
                           num_workers=self.config.num_workers,
-                          pin_memory=self.pin_memory)
+                          pin_memory=self.pin_memory,
+                          drop_last=True)
 
     def test_dataloader(self):
 
@@ -496,7 +501,8 @@ class GenericDataModule(pl.LightningDataModule):
                           collate_fn=self.batch_tokenize,
                           batch_size=self.config.batch_size,
                           num_workers=self.config.num_workers,
-                          pin_memory=self.pin_memory)
+                          pin_memory=self.pin_memory,
+                          drop_last=True)
 
     def labelled_dataloader(self, shuffle=True):
 
@@ -506,7 +512,8 @@ class GenericDataModule(pl.LightningDataModule):
                           shuffle=shuffle,
                           batch_size=self.config.batch_size,
                           num_workers=self.config.num_workers,
-                          pin_memory=self.pin_memory)
+                          pin_memory=self.pin_memory,
+                          drop_last=True)
 
     def unlabelled_dataloader(self, batch_size=None):
 
@@ -517,7 +524,8 @@ class GenericDataModule(pl.LightningDataModule):
                           shuffle=False,
                           batch_size=batch_size,
                           num_workers=self.config.num_workers,
-                          pin_memory=self.pin_memory)
+                          pin_memory=self.pin_memory,
+                          drop_last=True)
 
     def has_unlabelled_data(self):
         return len(self.train.U) > 0

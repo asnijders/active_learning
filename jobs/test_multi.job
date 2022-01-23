@@ -5,7 +5,7 @@
 #SBATCH --job-name=multi_gpu
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=3
-#SBATCH --time=00:25:00
+#SBATCH --time=00:30:00
 #SBATCH --mem=32000M
 #SBATCH --output=slurm/output_%A.out
 
@@ -35,12 +35,13 @@ srun python main.py \
             --acquisition_fn="max-entropy" \
             --labelling_batch_size=0.02 \
             --seed_size=0.02 \
-            --downsample_rate=0.01 \
+            --downsample_rate=0.05 \
             --log_every=2 \
             --refresh_rate=25 \
             --debug=True \
             --seed=43 \
             --iterations=10 \
-            --uid="multi-debug" \
+            --num_workers=3 \
+            --uid="gather" \
 
 cp -r "$TMPDIR"/ard_output_dir $HOME/active_learning/results

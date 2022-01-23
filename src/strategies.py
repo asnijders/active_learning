@@ -27,7 +27,7 @@ from tqdm import tqdm
 from scipy.stats import entropy
 import copy
 from pytorch_lightning import Trainer
-from src.utils import c_print, get_trainer
+from src.utils import get_trainer
 
 # local imports
 from src.coresets import CoresetGreedy
@@ -67,11 +67,9 @@ class LeastConfidence(AcquisitionFunction):
 
         dataloader = dm.unlabelled_dataloader()
         trainer = get_trainer(config, logger=None)
+        _ = trainer.predict(model, dataloader)
+        predictions = model.predictions.numpy()
 
-        predictions = trainer.predict(model, dataloader)
-
-        # reshape from n_batches x batch_s x n_classes to n_examples x n_classes
-        predictions = np.concatenate(predictions, axis=0)
         max_probabilities = np.max(predictions, axis=1)
         probability_gap = 1 - np.array(max_probabilities)
         least_confident_indices = np.argsort(probability_gap)[::-1][:k]
@@ -80,7 +78,7 @@ class LeastConfidence(AcquisitionFunction):
 
         # with torch.no_grad():
         #     dataloader = dm.unlabelled_dataloader()
-        #     c_print('Performing inference on unlabelled data for {}..'.format(config.acquisition_fn))
+        #     print('Performing inference on unlabelled data for {}..'.format(config.acquisition_fn))
         #     model.cuda()
         #
         #     predictions = []
@@ -115,13 +113,11 @@ class MaxEntropy(AcquisitionFunction):
 
         dataloader = dm.unlabelled_dataloader()
         trainer = get_trainer(config, logger=None)
+        _ = trainer.predict(model, dataloader)
+        predictions = model.predictions.numpy()
 
         if self.mode == 'max-entropy':
 
-            predictions = trainer.predict(model, dataloader)
-
-            # reshape from n_batches x batch_s x n_classes to n_examples x n_classes
-            predictions = np.concatenate(predictions, axis=0)
             entropies = entropy(predictions, axis=1)
             max_entropy_indices = np.argsort(entropies)[::-1][:k]
 
@@ -129,12 +125,8 @@ class MaxEntropy(AcquisitionFunction):
 
         elif self.mode == 'mc-max-entropy':
 
-            predictions = trainer.predict(model, dataloader)
-
-            # reshape from n_batches x batch_s x n_classes to n_examples x n_classes
-            predictions = np.concatenate(predictions, axis=0)
-            entropies = entropy(predictions, axis=1)
-            mc_entropy_indices = np.argsort(entropies)[::-1][:k]
+            mc_entropies = entropy(predictions, axis=1)
+            mc_entropy_indices = np.argsort(mc_entropies)[::-1][:k]
 
             return mc_entropy_indices
 
@@ -150,15 +142,15 @@ class BALD(AcquisitionFunction):
 
         dataloader = dm.unlabelled_dataloader()
         trainer = get_trainer(config, logger=None)
-        informations = trainer.predict(model, dataloader)
-        informations = np.concatenate(informations, axis=0)
+        _ = trainer.predict(model, dataloader)
+        informations = model.predictions.numpy()
         bald_indices = np.argsort(informations)[::-1][:k]
         return bald_indices
 
         # with torch.no_grad():
         #
         #     dataloader = dm.unlabelled_dataloader()
-        #     c_print('Performing inference on unlabelled data for {}..'.format(config.acquisition_fn))
+        #     print('Performing inference on unlabelled data for {}..'.format(config.acquisition_fn))
         #     model.cuda()
         #
         #     informations = []
@@ -187,9 +179,8 @@ class Coreset(AcquisitionFunction):
             """
 
             trainer = get_trainer(config, logger=None)
-            embeddings = trainer.predict(model, dataloader)
-            embeddings = np.concatenate(embeddings, axis=0)
-
+            _ = trainer.predict(encoder, dataloader)
+            embeddings = encoder.predictions
             return list(embeddings)
 
             # features = []
