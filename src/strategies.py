@@ -33,6 +33,39 @@ from src.utils import get_trainer
 from src.coresets import CoresetGreedy
 
 
+def get_predictions(datamodule, config, model):
+    """
+    simple fn for running inference on unlabelled data,
+    for single-gpu or multi-gpu training
+    multi-gpu: collect output from separate processes via all_gather and concatenate;
+    single-gpu: just return predictions from trainer.predict()
+    :param datamodule:
+    :param config:
+    :param model:
+    :return:
+    """
+
+    if config.gpus > 1:
+
+        dataloader = datamodule.unlabelled_dataloader()
+        trainer = get_trainer(config, logger=None)
+        _ = trainer.predict(model, dataloader)
+        output = model.predictions.numpy()
+
+    elif config.gpus == 1:
+
+        dataloader = datamodule.unlabelled_dataloader()
+        trainer = get_trainer(config, logger=None)
+        predictions = trainer.predict(model, dataloader)
+        predictions = torch.cat(predictions, dim=0)
+        # print(predictions.size())
+        output = predictions.numpy()
+
+
+    return output
+
+
+
 class AcquisitionFunction:
     def __init__(self):
 
@@ -65,10 +98,9 @@ class LeastConfidence(AcquisitionFunction):
         This function implements least-confidence acquisition
         """
 
-        dataloader = dm.unlabelled_dataloader()
-        trainer = get_trainer(config, logger=None)
-        _ = trainer.predict(model, dataloader)
-        predictions = model.predictions.numpy()
+        predictions = get_predictions(datamodule=dm,
+                                      config=config,
+                                      model=model)
 
         max_probabilities = np.max(predictions, axis=1)
         probability_gap = 1 - np.array(max_probabilities)
@@ -111,10 +143,9 @@ class MaxEntropy(AcquisitionFunction):
         This function implements max-entropy and MC max-entropy acquisition
         """
 
-        dataloader = dm.unlabelled_dataloader()
-        trainer = get_trainer(config, logger=None)
-        _ = trainer.predict(model, dataloader)
-        predictions = model.predictions.numpy()
+        predictions = get_predictions(datamodule=dm,
+                                      config=config,
+                                      model=model)
 
         if self.mode == 'max-entropy':
 
@@ -140,29 +171,12 @@ class BALD(AcquisitionFunction):
         This function implements entropy uncertainty sampling acquisition
         """
 
-        dataloader = dm.unlabelled_dataloader()
-        trainer = get_trainer(config, logger=None)
-        _ = trainer.predict(model, dataloader)
-        informations = model.predictions.numpy()
+        informations = get_predictions(datamodule=dm,
+                                       config=config,
+                                       model=model)
+
         bald_indices = np.argsort(informations)[::-1][:k]
         return bald_indices
-
-        # with torch.no_grad():
-        #
-        #     dataloader = dm.unlabelled_dataloader()
-        #     print('Performing inference on unlabelled data for {}..'.format(config.acquisition_fn))
-        #     model.cuda()
-        #
-        #     informations = []
-        #     for i, batch in enumerate(dataloader):
-        #
-        #         batch = {key: value.cuda() for key, value in batch.items()}
-        #         information = model.bald_step(batch, i)
-        #         informations.extend(information)
-        #
-        #     bald_indices = np.argsort(informations)[::-1][:k] #TODO check correctness
-        #
-        # return bald_indices
 
 
 class Coreset(AcquisitionFunction):

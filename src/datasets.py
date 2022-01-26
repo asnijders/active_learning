@@ -13,9 +13,11 @@ from transformers import DataCollatorWithPadding
 import sys
 import numpy as np
 import os
+import copy
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 
 
 def downsample(dataset, dataset_id, downsample_rate, seed):
@@ -65,7 +67,7 @@ def read_dataset(input_dir, dataset_id, split, downsample_rate, seed):
                                  downsample_rate,
                                  seed)
 
-        if downsample_rate >= 0.25:
+        if 0.25 <= downsample_rate < 1.00:
             if split == 'dev':
                 dataset = dataset.sample(1000, random_state=seed)
             elif split == 'test':
@@ -103,11 +105,15 @@ def read_dataset(input_dir, dataset_id, split, downsample_rate, seed):
                                  downsample_rate,
                                  seed)
 
-        if downsample_rate >= 0.25:
-            if split == 'dev':
-                dataset = dataset[:int((len(dataset)/2))].sample(1000, random_state=seed)
-            elif split == 'test':
-                dataset = dataset[int((len(dataset)/2)):].sample(1000, random_state=seed)
+        # split dev into dev and test set
+        if split == 'dev':
+            dataset = dataset[:int((len(dataset)/2))]
+        elif split == 'test':
+            dataset = dataset[int((len(dataset)/2)):]
+
+        if 0.25 <= downsample_rate < 1.00 and split is not 'train':
+            dataset = dataset.sample(1000, random_state=seed)
+
 
 
     # elif dataset_id == 'FEVER':
@@ -151,12 +157,19 @@ def combine_datasets(input_dir, datasets, split, downsample_rate, seed):
     :return: DataFrame with examples and labels for all datasets for split of interest
     """
 
+    def id2index(dataframe):
+        # reset index and assign to ID column
+        dataframe = dataframe.reset_index(drop=True)
+        dataframe.ID = dataframe.index
+        return dataframe
+
     # If we only consider a single dataset, we can just read and return it
     if len(datasets) == 1:
-        return read_dataset(input_dir, datasets[0], split, downsample_rate, seed)
+        dataset = read_dataset(input_dir, datasets[0], split, downsample_rate, seed)
+        dataset = id2index(dataset)
+        return dataset
 
     # If we consider multiple datasets we have to combine them into a single dataset
-
     # 1. create empty dataframe to store examples from all datasets
     dataset_list = []
 
@@ -170,9 +183,8 @@ def combine_datasets(input_dir, datasets, split, downsample_rate, seed):
     # 4. combine individual datasets into single dataset
     combined_dataset = pd.concat(dataset_list, axis=0)
 
-    # reset index and assign to ID column
-    combined_dataset = combined_dataset.reset_index(drop=True)
-    combined_dataset.ID = combined_dataset.index
+    # 5. replace str ID with index-based ID system
+    combined_dataset = id2index(combined_dataset)
 
     print(f"{'Total {} size:'.format(split):<30}{len(combined_dataset):<32}", '\n', flush=True)
 
@@ -246,14 +258,14 @@ class DataPool(Dataset):
         if torch.is_tensor(idx):
             idx = idx.tolist()
 
-        premise, hypothesis, label, id, _ = self.data.iloc[idx]
+        premise, hypothesis, label, sample_id, dataset_id = self.data.iloc[idx]
 
         label = self.label2id[label]
 
         sample = {'premise': premise,
                   'hypothesis': hypothesis,
                   'label': label,
-                  'id': id}
+                  'id': sample_id}
 
         return sample
 
@@ -281,12 +293,19 @@ class DataPool(Dataset):
         if k is a percentage we draw the corresponding % from the unlabelled pool
         """
 
-        if k > 1:
-            pass
+        if k == 0:
+            print('Warning: value of k is 0 - this means no samples will be acquired for labelling!')
+
         elif 0 < k < 1:
             k = int(k * len(self.U))
-        else:
-            raise ValueError('value for k must be percentage or integer > 1')
+
+        if k == 1.0:
+            k = int(k * len(self.U))
+
+        if k > 1:
+            pass
+        # else:
+        #     raise ValueError('value for k must be percentage or integer > 1')
 
         return k
 
@@ -526,6 +545,29 @@ class GenericDataModule(pl.LightningDataModule):
                           num_workers=self.config.num_workers,
                           pin_memory=self.pin_memory,
                           drop_last=True)
+
+    def separate_test_loader(self, sub_datapool):
+
+        return DataLoader(dataset=sub_datapool,
+                          collate_fn=self.batch_tokenize,
+                          shuffle=False,
+                          batch_size=self.config.batch_size,
+                          num_workers=self.config.num_workers,
+                          pin_memory=self.pin_memory,
+                          drop_last=True)
+
+    def get_separate_test_loaders(self):
+
+        test_loaders = []
+        aggregate_datapool = self.test  # self.test is a DataPool Obj;
+
+        for dataset_id in self.config.datasets:  # for each dataset seen during training
+            sub_datapool = copy.deepcopy(aggregate_datapool)  # make a clone the DataPool test-set object,
+            sub_datapool.data = sub_datapool.L[sub_datapool.L['Dataset'] == dataset_id]  # filter based on dataset ID
+            sub_dataloader = self.separate_test_loader(sub_datapool=sub_datapool)  # create dataloader for subset
+            test_loaders.append(sub_dataloader)
+
+        return test_loaders
 
     def has_unlabelled_data(self):
         return len(self.train.U) > 0

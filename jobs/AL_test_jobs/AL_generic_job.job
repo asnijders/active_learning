@@ -2,12 +2,12 @@
 
 #SBATCH --partition=gpu_titanrtx_shared
 #SBATCH --gres=gpu:1
-#SBATCH --job-name=titan
+#SBATCH --job-name=AL_generic
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=24
-#SBATCH --time=00:45:00
+#SBATCH --cpus-per-task=4
+#SBATCH --time=00:25:00
 #SBATCH --mem=32000M
-#SBATCH --output=slurm/output_%A.out
+#SBATCH --output=slurm/AL_test_jobs/output_%A.out
 
 module purge
 module load 2021
@@ -33,21 +33,22 @@ srun python main.py \
             --output_dir "$TMPDIR/ard_output_dir_results" \
             --checkpoint_dir "$TMPDIR/ard_output_dir_checkpoints" \
             --model_id="bert-base-uncased" \
-            --batch_size=64 \
-            --acquisition_fn="max-entropy" \
+            --batch_size=32 \
+            --acquisition_fn="bald" \
             --labelling_batch_size=0.02 \
             --seed_size=0.02 \
-            --downsample_rate=0.25 \
+            --downsample_rate=0.01 \
             --log_every=2 \
             --refresh_rate=25 \
-            --seed=43 \
-            --iterations=10 \
+            --seed=42 \
+            --al_iterations=10 \
             --num_workers=8 \
             --precision=16 \
             --dropout=0.3 \
             --lr=2e-5 \
-            --max_epochs=10 \
-            --monitor="val_acc" \
-            --uid="val_acc" \
+            --max_epochs=1 \
+            --monitor="val_loss" \
+            --uid="generic_tests" \
+
 
 cp -r "$TMPDIR"/ard_output_dir_results $HOME/active_learning/results

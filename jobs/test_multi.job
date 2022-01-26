@@ -40,7 +40,7 @@ srun python main.py \
             --refresh_rate=25 \
             --debug=True \
             --seed=43 \
-            --iterations=10 \
+            --al_iterations=10 \
             --num_workers=3 \
             --uid="gather" \
 

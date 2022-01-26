@@ -73,7 +73,16 @@ class TransformerModel(LightningModule):
     """
     This class implements a Lightning Module for several Transformer-based models.
     """
-    def __init__(self, dropout, lr, model_id, batch_size, acquisition_fn, mc_iterations, num_gpus):
+    def __init__(self,
+                 dropout,
+                 lr,
+                 model_id,
+                 batch_size,
+                 acquisition_fn,
+                 mc_iterations,
+                 num_gpus,
+                 separate_test_sets):
+
         super().__init__()
         self.save_hyperparameters()
 
@@ -86,6 +95,8 @@ class TransformerModel(LightningModule):
         self.mc_iterations = mc_iterations
         self.predictions = None
         self.num_gpus = num_gpus
+        self.separate_test_sets = separate_test_sets
+        self.test_set_id = ''
 
         # self.accuracy = metrics.Accuracy() # for logging to lightning
         # load pre-trained, uncased, sequence-classification BERT model
@@ -164,7 +175,8 @@ class TransformerModel(LightningModule):
     def test_step(self, batch, batch_idx):
 
         loss, acc = self._shared_eval_step(batch, batch_idx)
-        metrics = {"test_acc": acc, "test_loss": loss}
+        metrics = {"{}test_acc".format(self.test_set_id): acc,
+                   "{}test_loss".format(self.test_set_id): loss}
         self.log_dict(metrics,
                       batch_size=self.batch_size,
                       on_step=True,
@@ -233,8 +245,12 @@ class TransformerModel(LightningModule):
         # since DDP divides the data among different GPUs, we need to 're-unite' their predictions after inference
         # self.all_gather gathers the predictions from separate gpu processes.
         # >>> list of length num_batches where each elem is a tensor of Size ([world_size, batch_size, num_classes])
-        print('finished inference, awaiting gather')
+        # print('finished inference, awaiting gather')
 
+        if self.num_gpus == 1:
+            return None
+
+        # print(predictions)
         predictions = self.all_gather(data=results)[0]
 
         # iterate over list of multi-gpu tensors
@@ -254,9 +270,11 @@ class TransformerModel(LightningModule):
 
         # if predictions.size()
 
-        print('finished gather operation')
-
+        # print('finished gather operation')
         self.predictions = predictions.cpu()
+
+        # print('\n returned predictions: \n')
+        # print(predictions)
 
         return None
 
@@ -266,7 +284,6 @@ class TransformerModel(LightningModule):
         token_type_ids = batch['token_type_ids']
         attention_masks = batch['attention_masks']
         labels = batch['labels']
-        ids = batch['ids']
 
         output = self(input_ids=input_ids,
                       attention_masks=attention_masks,
@@ -275,9 +292,10 @@ class TransformerModel(LightningModule):
 
         prediction = torch.softmax(output.logits.detach(), dim=1)
 
-        return prediction #, ids
+        return prediction
 
     def apply_dropout(self, m):
+        """simple fn for enabling all dropout modules in model"""
         if type(m) == nn.Dropout:
             m.train()
 
@@ -388,7 +406,7 @@ class TransformerModel(LightningModule):
         # Compute Entropy of Average
         entropies = entropy(np.mean(predictions, axis=0), axis=1)
         disagreements = np.mean(disagreements, axis=0)
-        return entropies - disagreements
+        return torch.tensor(entropies - disagreements)
 
     def embedding_step(self, batch, batch_idx):
 

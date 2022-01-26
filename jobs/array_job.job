@@ -42,7 +42,7 @@ srun python main.py \
             --downsample_rate=0.25 \
             --log_every=25 \
             --refresh_rate=100 \
-            --iterations=10 \
+            --al_iterations=10 \
             $(head -$SLURM_ARRAY_TASK_ID $HPARAMS_FILE | tail -1)
 
 cp -r "$TMPDIR"/ard_output_dir $HOME/active_learning/results

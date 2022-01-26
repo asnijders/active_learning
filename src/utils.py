@@ -10,6 +10,7 @@ import torch
 from pytorch_lightning import Trainer
 from pytorch_lightning.utilities import rank_zero_only
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
+from src.models import TransformerModel
 import os
 
 
@@ -25,9 +26,24 @@ def log_results(logger, results, dm):
     return None
 
 
+def get_model(config):
+    """simple fn for initialising model"""
+
+    model = TransformerModel(model_id=config.model_id,
+                             dropout=config.dropout,
+                             lr=config.lr,
+                             batch_size=config.batch_size,
+                             acquisition_fn=config.acquisition_fn,
+                             mc_iterations=config.mc_iterations,
+                             num_gpus=config.gpus,
+                             separate_test_sets=config.separate_test_sets)
+
+    return model
+
+
 def get_trainer(config, logger, batch_size=None, gpus=None):
     """
-    Factory for building trainer object
+    simple fn for building trainer object
     :param gpus:
     :param config:
     :param logger:
@@ -44,17 +60,18 @@ def get_trainer(config, logger, batch_size=None, gpus=None):
             mode = "max"
 
         # Init early stopping
-        early_stopping_callback = EarlyStopping(monitor="val_loss",
+        early_stopping_callback = EarlyStopping(monitor=config.monitor,
                                                 min_delta=0.00,
                                                 patience=config.patience,
                                                 verbose=True,
                                                 mode=mode)
 
-        # Init ModelCheckpoint callback, monitoring 'val_loss'
-        checkpoint_callback = ModelCheckpoint(monitor="val_loss",
+        # Init ModelCheckpoint callback, monitoring 'config.monitor'
+        run_dir = config.checkpoint_dir + '/' + config.uid + '/' + config.acquisition_fn + '/' + str(config.seed) + '/'
+        checkpoint_callback = ModelCheckpoint(monitor=config.monitor,
                                               mode=mode,
                                               save_top_k=1,
-                                              dirpath=config.checkpoint_dir,
+                                              dirpath=run_dir,
                                               filename='{epoch}-{val_loss:.2f}-{val_acc:.2f}',
                                               verbose=True)
 
@@ -85,10 +102,46 @@ def get_trainer(config, logger, batch_size=None, gpus=None):
                       limit_test_batches=config.toy_run,
                       progress_bar_refresh_rate=config.refresh_rate,
                       enable_progress_bar=True,
-                      auto_scale_batch_size="binsearch",
+                      # auto_scale_batch_size="binsearch",
                       precision=config.precision)
 
     return trainer
+
+
+def test_model(dm, config, model, trainer, logger):
+    """
+    fn for evaluating trained model on either:
+    - separate test sets, in case of multiple datasets
+    - single test set, in case of aggregate or single test set
+    :param dm: datamodule obj
+    :param config: argparse obj
+    :param model: trained transformer instance
+    :return: dictionary with test statistics
+    """
+
+    if config.separate_test_sets is True:
+        print('Evaluating final model on separate test sets', flush=True)
+        test_loaders = dm.get_separate_test_loaders()
+
+        for test_loader, dataset_id in zip(test_loaders, config.datasets):
+            model.test_set_id = dataset_id + '_'
+            results = trainer.test(model, test_loader)
+
+            # log test results
+            log_results(logger=logger,
+                        results=results,
+                        dm=dm)
+
+    else:
+        print('Evaluating final model on aggregate test set', flush=True)
+        test_loader = dm.test_dataloader()
+        results = trainer.test(model, test_loader)
+
+        # log test results
+        log_results(logger=logger,
+                    results=results,
+                    dm=dm)
+
 
 
 def log_percentages(mode, new_indices, logger, dm, epoch):
@@ -97,6 +150,7 @@ def log_percentages(mode, new_indices, logger, dm, epoch):
     - dataset composition
     - label distribution
     - more other things in the future?
+    :param epoch:
     :param mode: 'makeup' logs statistics for the current pool of labelled examples
                  'active' logs statistics for AL iteration
     :param new_indices: set of indices of newly queried examples
@@ -148,9 +202,3 @@ def collect_garbage():
     torch.cuda.empty_cache()
     garbage_collection_cuda()
     gc.collect()
-
-
-# @rank_zero_only
-# def print(*args, **kwargs):
-#
-#     return print(*args, **kwargs)

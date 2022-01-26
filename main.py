@@ -20,7 +20,7 @@ from pytorch_lightning.strategies import DDPStrategy
 from src.models import TransformerModel
 from src.datasets import GenericDataModule
 from src.strategies import select_acquisition_fn
-from src.utils import log_results, log_percentages, get_trainer, del_checkpoint, cleanup
+from src.utils import log_results, log_percentages, get_trainer, del_checkpoint, get_model, test_model
 from src.active import active
 
 logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
@@ -63,7 +63,7 @@ def main(args):
                        'AL_iter': str(0)})
 
     # initialise PL logging and trainer objects
-    logger = WandbLogger(project="active_learning",
+    logger = WandbLogger(project="active_learning/{}".format(config.uid),
                          save_dir=config.output_dir,
                          log_model=False)
 
@@ -80,18 +80,12 @@ def main(args):
 
     print('\nStarting Active Learning process with strategy: {}'.format(config.acquisition_fn))
     config.labelling_batch_size = dm.train.set_k(config.labelling_batch_size)
-    for i in range(config.iterations):
+    for i in range(config.al_iterations):
 
         print('Active Learning iteration: {}\n'.format(i+1), flush=True)
 
         # ---------------------------------- Training model on current labelled dataset ------------------------------
-        model = TransformerModel(model_id=config.model_id,
-                                 dropout=config.dropout,
-                                 lr=config.lr,
-                                 batch_size=config.batch_size,
-                                 acquisition_fn=config.acquisition_fn,
-                                 mc_iterations=config.mc_iterations,
-                                 num_gpus=config.gpus)
+        model = get_model(config)
 
         # initialise trainer
         trainer = get_trainer(config=config,
@@ -108,19 +102,21 @@ def main(args):
                     val_dataloaders=val_loader)
 
         # -------------------------------  Evaluating model on current labelled dataset ------------------------------
-        # load model chkpt with best dev accuracy and evaluate
+        # load model checkpoint with best dev accuracy and evaluate
         # we have to evaluate again since trainer.fit doesn't return any dev statistics :(
         if config.debug is False:
-            print('Loading checkpoint: {}'.format(trainer.checkpoint_callback.best_model_path))
+            print('\nLoading checkpoint: {}'.format(trainer.checkpoint_callback.best_model_path))
             model = TransformerModel.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
+
         results = trainer.validate(model, val_loader)
         log_results(logger=wandb,
                     results=results,
                     dm=dm)
 
         # ------------------------------------ Acquiring new instances for labeling ----------------------------------
-        # # set training dataset mode to access the unlabelled data
-        # dm.train.set_mode('U')
+        # Exit AL loop if all data was already labelled
+        if dm.has_unlabelled_data() is False:
+            break
 
         # initialise acquisition function
         acquisition_fn = select_acquisition_fn(fn_id=config.acquisition_fn)
@@ -148,10 +144,11 @@ def main(args):
                         dm=dm,
                         epoch=None)
 
-        # delete checkpoints
+        # delete now-redundant checkpoint
         if config.debug is False:
             del_checkpoint(trainer.checkpoint_callback.best_model_path)
 
+        # some extra precautions to prevent memory leaks
         del model
         del trainer
         del acquisition_fn
@@ -159,17 +156,9 @@ def main(args):
         del val_loader
         gc.collect()
 
-        # some extra precautions to prevent memory leaks
-
     # --------------------------------------------- Testing final model --------------------------------------------- #
     # initialise final model
-    model = TransformerModel(model_id=config.model_id,
-                             dropout=config.dropout,
-                             lr=config.lr,
-                             batch_size=config.batch_size,
-                             acquisition_fn=config.acquisition_fn,
-                             mc_iterations=config.mc_iterations,
-                             num_gpus=config.gpus)
+    model = get_model(config)
 
     trainer = get_trainer(config=config,
                           logger=logger)
@@ -177,7 +166,6 @@ def main(args):
     # initialise dataloaders for current data
     labelled_loader = dm.labelled_dataloader()
     val_loader = dm.val_dataloader()
-    test_loader = dm.test_dataloader()
 
     # fine-tune model on final labelled dataset L, from scratch
     print('\nFitting model on updated labelled pool, from scratch', flush=True)
@@ -185,13 +173,17 @@ def main(args):
                 train_dataloaders=labelled_loader,
                 val_dataloaders=val_loader)
 
-    # evaluate on test set and log statistics
+    # evaluate best model checkpoint on test set and log statistics
     if config.debug is False:
+        print('Loading checkpoint {} for testing..'.format(trainer.checkpoint_callback.best_model_path), flush=True)
         model = TransformerModel.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
-    results = trainer.test(model, test_loader)
-    log_results(logger=wandb,
-                results=results,
-                dm=dm)
+
+    # evaluate on test set(s)
+    test_model(dm=dm,
+               config=config,
+               model=model,
+               trainer=trainer,
+               logger=wandb)
 
 
 if __name__ == '__main__':
@@ -205,21 +197,23 @@ if __name__ == '__main__':
                         help='specifies where on scratch disk output should be stored')
     parser.add_argument('--checkpoint_dir', default=None, type=str,
                         help='specifies where on SCRATCH model checkpoints should be saved')
-
     parser.add_argument('--uid', default=None, type=str,
                         help='unique ID of array job. useful for grouping multiple runs in wandb')
 
     # Experiment args
     parser.add_argument('--seed', default=42, type=int,
                         help='specifies global seed')
-    parser.add_argument('--datasets', default=['SNLI', 'ANLI', 'MNLI'], type=list,
-                        help='list to specify nli datasets')
+    parser.add_argument('--datasets', default='MNLI', type=str,
+                        help='str to specify what nli datasets should be loaded'
+                             'please separate datasets via a "," e.g.'
+                             '--datasets="MNLI,SNLI,ANLI"')
+    parser.add_argument('--separate_test_sets', default=True, type=bool,
+                        help='toggle between evaluation on:'
+                             '- False: aggregate test set'
+                             '- True: separate dataset-specific test sets')
     parser.add_argument('--model_id', default='bert-base-uncased', type=str,
                         help='specifies which transformer is used for encoding sentence pairs'
-                             'Choose from:'
-                             'bert-base-uncased'
-                             'bert-large-uncased')
-
+                             'Choose from: bert-base-uncased, bert-large-uncased, RoBERTa')
     parser.add_argument('--acquisition_fn', default='coreset', type=str,
                         help='specifies which acquisition function is used for pool-based active learning')
     parser.add_argument('--mc_iterations', default=4, type=int,
@@ -232,9 +226,8 @@ if __name__ == '__main__':
                         help='specifies size of seed dataset')
     parser.add_argument('--labelling_batch_size', default=0.02, type=float,
                         help='specifies how many new instances will be labelled per AL iteration')
-    parser.add_argument('--iterations', default=10, type=int,
+    parser.add_argument('--al_iterations', default=10, type=int,
                         help='specifies number of active learning iterations')
-    # TODO add an arg to toggle downscaling of dev sets since this is done in some AL papers
 
     # Training args
     # TODO make sure that we use appropriate training parameters for transformers
@@ -284,5 +277,8 @@ if __name__ == '__main__':
     parser.add_argument('--log_every', default=log_every, type=int,
                         help='number of steps between loggings')
     config = parser.parse_args()
+    config.datasets = config.datasets.upper().replace(' ','').split(',')
+    if config.debug is True:
+        config.al_iterations = 1
 
     main(config)

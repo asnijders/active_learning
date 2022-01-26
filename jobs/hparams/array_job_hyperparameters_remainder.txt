@@ -1,9 +1,3 @@
---seed 42 --acquisition_fn=random
---seed 43 --acquisition_fn=random
---seed 44 --acquisition_fn=random
---seed 42 --acquisition_fn=least-confidence
---seed 43 --acquisition_fn=least-confidence
---seed 44 --acquisition_fn=least-confidence
 --seed 42 --acquisition_fn=max-entropy
 --seed 43 --acquisition_fn=max-entropy
 --seed 44 --acquisition_fn=max-entropy
