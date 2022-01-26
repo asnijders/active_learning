@@ -130,3 +130,5 @@ dmypy.json
 /resources/ard_data/nli_fever/*
 /resources/ard_data/snli_1.0/*
 /slurm/
+/results/
+/wandb/
