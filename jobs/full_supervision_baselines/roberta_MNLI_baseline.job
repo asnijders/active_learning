@@ -32,7 +32,7 @@ srun python main.py \
             --input_dir "$TMPDIR/ard_data" \
             --output_dir "$TMPDIR/ard_output_dir_results" \
             --checkpoint_dir "$TMPDIR/ard_output_dir_checkpoints" \
-            --model_id="bert-base-uncased" \
+            --model_id="roberta-base" \
             --datasets="MNLI" \
             --seed_datasets="MNLI" \
             --checkpoint_datasets="MNLI" \
@@ -51,4 +51,6 @@ srun python main.py \
             --lr=2e-5 \
             --max_epochs=5 \
             --monitor="val_loss" \
-            --uid="bert_MNLI_test_run" \
+            --uid="roberta_MNLI_baseline" \
+
+cp -r "$TMPDIR"/ard_output_dir_results $HOME/active_learning/results

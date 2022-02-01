@@ -20,7 +20,7 @@ from pytorch_lightning.strategies import DDPStrategy
 from src.models import TransformerModel
 from src.datasets import GenericDataModule
 from src.strategies import select_acquisition_fn
-from src.utils import log_results, log_percentages, get_trainer, del_checkpoint, get_model, test_model
+from src.utils import log_percentages, get_trainer, del_checkpoint, get_model, evaluate_model, train_model
 from src.active import active
 
 logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
@@ -63,6 +63,8 @@ def main(args):
                        'AL_iter': str(0)})
 
     # initialise PL logging and trainer objects
+    # TODO: add another CLI arg to specify whether a run is meant for testing purposes, or for actual experiments
+    # this may help to keep my experiments / logs a bit more organised
     logger = WandbLogger(project="active_learning/{}".format(config.uid),
                          save_dir=config.output_dir,
                          log_model=False)
@@ -75,9 +77,6 @@ def main(args):
                     epoch=None)
 
     # --------------------------------------- Pool-based active learning ---------------------------------------------
-    # TODO: abstract this code away into an active learner class, or...
-    # TODO: wrap all of this in a function call such that everything gets cleaned up afterwards?
-
     print('\nStarting Active Learning process with strategy: {}'.format(config.acquisition_fn))
     config.labelling_batch_size = dm.train.set_k(config.labelling_batch_size)
     for i in range(config.al_iterations):
@@ -85,33 +84,28 @@ def main(args):
         print('Active Learning iteration: {}\n'.format(i+1), flush=True)
 
         # ---------------------------------- Training model on current labelled dataset ------------------------------
+        # initialise model
         model = get_model(config)
 
         # initialise trainer
         trainer = get_trainer(config=config,
                               logger=logger)
 
-        # initialise dataloaders for current data
-        labelled_loader = dm.labelled_dataloader()
-        val_loader = dm.val_dataloader()
-
-        # fine-tune model on (updated) labelled dataset L, from scratch
-        print('\nFitting model on updated labelled pool, from scratch', flush=True)
-        trainer.fit(model=model,
-                    train_dataloaders=labelled_loader,
-                    val_dataloaders=val_loader)
+        # train model
+        model, dm, logger, trainer = train_model(dm=dm,
+                                                 config=config,
+                                                 model=model,
+                                                 logger=logger,
+                                                 trainer=trainer)
 
         # -------------------------------  Evaluating model on current labelled dataset ------------------------------
-        # load model checkpoint with best dev accuracy and evaluate
-        # we have to evaluate again since trainer.fit doesn't return any dev statistics :(
-        if config.debug is False:
-            print('\nLoading checkpoint: {}'.format(trainer.checkpoint_callback.best_model_path))
-            model = TransformerModel.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
-
-        results = trainer.validate(model, val_loader)
-        log_results(logger=wandb,
-                    results=results,
-                    dm=dm)
+        # evaluate best checkpoint on dev set
+        evaluate_model(split='dev',
+                       dm=dm,
+                       config=config,
+                       model=model,
+                       trainer=trainer,
+                       logger=wandb)
 
         # ------------------------------------ Acquiring new instances for labeling ----------------------------------
         # Exit AL loop if all data was already labelled
@@ -145,45 +139,36 @@ def main(args):
                         epoch=None)
 
         # delete now-redundant checkpoint
-        if config.debug is False:
-            del_checkpoint(trainer.checkpoint_callback.best_model_path)
+        del_checkpoint(trainer.checkpoint_callback.best_model_path)
 
         # some extra precautions to prevent memory leaks
         del model
         del trainer
         del acquisition_fn
-        del labelled_loader
-        del val_loader
         gc.collect()
 
     # --------------------------------------------- Testing final model --------------------------------------------- #
     # initialise final model
     model = get_model(config)
 
+    # initialise trainer
     trainer = get_trainer(config=config,
                           logger=logger)
 
-    # initialise dataloaders for current data
-    labelled_loader = dm.labelled_dataloader()
-    val_loader = dm.val_dataloader()
-
-    # fine-tune model on final labelled dataset L, from scratch
-    print('\nFitting model on updated labelled pool, from scratch', flush=True)
-    trainer.fit(model=model,
-                train_dataloaders=labelled_loader,
-                val_dataloaders=val_loader)
-
-    # evaluate best model checkpoint on test set and log statistics
-    if config.debug is False:
-        print('Loading checkpoint {} for testing..'.format(trainer.checkpoint_callback.best_model_path), flush=True)
-        model = TransformerModel.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
+    # train model
+    model, dm, logger, trainer = train_model(dm=dm,
+                                             config=config,
+                                             model=model,
+                                             logger=logger,
+                                             trainer=trainer)
 
     # evaluate on test set(s)
-    test_model(dm=dm,
-               config=config,
-               model=model,
-               trainer=trainer,
-               logger=wandb)
+    evaluate_model(split='test',
+                   dm=dm,
+                   config=config,
+                   model=model,
+                   trainer=trainer,
+                   logger=wandb)
 
 
 if __name__ == '__main__':
@@ -197,23 +182,46 @@ if __name__ == '__main__':
                         help='specifies where on scratch disk output should be stored')
     parser.add_argument('--checkpoint_dir', default=None, type=str,
                         help='specifies where on SCRATCH model checkpoints should be saved')
+    parser.add_argument('--project_dir', default=None, type=str,
+                        help='specify what project dir to write wandb experiment to')
+
     parser.add_argument('--uid', default=None, type=str,
                         help='unique ID of array job. useful for grouping multiple runs in wandb')
 
     # Experiment args
     parser.add_argument('--seed', default=42, type=int,
                         help='specifies global seed')
+
     parser.add_argument('--datasets', default='MNLI', type=str,
                         help='str to specify what nli datasets should be loaded'
-                             'please separate datasets via a "," e.g.'
+                             'please separate datasets with a "," e.g.'
                              '--datasets="MNLI,SNLI,ANLI"')
+
+    parser.add_argument('--seed_datasets', default=None, type=str,
+                        help='str to specify which datasets should be used for initial seed'
+                             'please separate datasets with a "," e.g.'
+                             '--datasets="MNLI,SNLI,ANLI"')
+
+    parser.add_argument('--checkpoint_datasets', default=None, type=str,
+                        help='specify what dataset(s) should be used for dev-based checkpointing'
+                        'multiple datasets: use aggregate of dev performances for checkpointing (not yet implemented)' 
+                        'single dataset: only use a single dataset for dev-based checkpointing')
+
     parser.add_argument('--separate_test_sets', default=True, type=bool,
-                        help='toggle between evaluation on:'
+                        help='toggle between testing on:'
                              '- False: aggregate test set'
-                             '- True: separate dataset-specific test sets')
+                             '- True: separate dataset-specific test sets'
+                             'Note: any dataset used at train time will always be evaluated at dev/test time')
+
+    parser.add_argument('--separate_eval_sets', default=True, type=bool,
+                        help='toggle between evaluating (NOT checkpointing!) on:'
+                             '- False: aggregate dev set'
+                             '- True: separate dataset-specific dev sets')
+
     parser.add_argument('--model_id', default='bert-base-uncased', type=str,
                         help='specifies which transformer is used for encoding sentence pairs'
                              'Choose from: bert-base-uncased, bert-large-uncased, RoBERTa')
+
     parser.add_argument('--acquisition_fn', default='coreset', type=str,
                         help='specifies which acquisition function is used for pool-based active learning')
     parser.add_argument('--mc_iterations', default=4, type=int,
@@ -275,10 +283,34 @@ if __name__ == '__main__':
 
     log_every = 50 if device_count() > 0 else 1
     parser.add_argument('--log_every', default=log_every, type=int,
-                        help='number of steps between loggings')
+                        help='number of steps between logging')
     config = parser.parse_args()
-    config.datasets = config.datasets.upper().replace(' ','').split(',')
+
+    # convert CLI str-based dataset args to lists
+    config.datasets = config.datasets.upper().replace(' ', '').split(',')
+
+    # if no explicit seed dataset argument is given we assume uniform random sampling from entire pool of datasets
+    if config.seed_datasets is None:
+        config.seed_datasets = config.datasets
+    else:
+        config.seed_datasets = config.seed_datasets.upper().replace(' ', '').split(',')
+
+    # convert seed and batch sizes to integers if need be
+    if config.seed_size > 1:
+        config.seed_size = int(config.seed_size)
+    if config.labelling_batch_size > 1:
+        config.labelling_batch_size = int(config.labelling_batch_size)
+
+    if config.checkpoint_datasets is not None:
+        config.checkpoint_datasets = config.checkpoint_datasets.upper().replace(' ', '').split()
+
+        if len(config.checkpoint_datasets) > 1:
+            raise NotImplementedError('Multi-dataset checkpointing is not implemented yet')
+
+        if not set(config.datasets) >= set(config.checkpoint_datasets):
+            raise ValueError('Please ensure that datasets used at checkpointing are at least subset of train datasets')
+
     if config.debug is True:
-        config.al_iterations = 1
+        config.al_iterations = 2
 
     main(config)

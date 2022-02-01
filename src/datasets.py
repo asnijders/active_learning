@@ -19,7 +19,6 @@ import copy
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
-
 def downsample(dataset, dataset_id, downsample_rate, seed):
     """
     This function takes a dataframe and downsamples it according to a provided percentage
@@ -37,12 +36,14 @@ def downsample(dataset, dataset_id, downsample_rate, seed):
 def read_dataset(input_dir, dataset_id, split, downsample_rate, seed):
     """
     This function takes a dataset id and reads the corresponding .json split in an appropriate Pandas DataFrame
+    :param seed:
     :param downsample_rate:
     :param input_dir:
     :param dataset_id: str indicating which dataset should be read
     :param split: str indicating which split should be read
     :return: DataFrame with examples (Premise, Hypothesis, Label, ID)
     """
+    anli_rounds = ['ANLI_R1', 'ANLI_R2', 'ANLI_R3']
 
     def replace_labels(label):
         label_conversions = {'e': 'entailment',
@@ -73,18 +74,14 @@ def read_dataset(input_dir, dataset_id, split, downsample_rate, seed):
             elif split == 'test':
                 dataset = dataset.sample(1000, random_state=seed)
 
-    elif dataset_id == 'ANLI':
+    elif dataset_id in anli_rounds:
 
-        anli_dfs = []  # TODO think about how I want to implement logic for multiple rounds
-        for data_round in ['R1']:#, 'R2', 'R3']:
-            data_path = '{}/anli_v1.0/{}/{}.jsonl'.format(input_dir, data_round, split)
-            anli_dataset = pd.read_json(data_path, lines=True)
-            anli_dataset = anli_dataset[['context', 'hypothesis', 'label', 'uid']]  # get rid of unnecessary columns
-            anli_dataset['label'] = anli_dataset['label'].apply(replace_labels)  # ensures consistently named labels
-            anli_dataset['dataset'] = 'ANLI'
-            anli_dfs.append(anli_dataset)
-
-        dataset = pd.concat(anli_dfs, axis=0)
+        data_round = dataset_id[-2:] # extract the 'R#' substring from the provided ID
+        data_path = '{}/anli_v1.0/{}/{}.jsonl'.format(input_dir, data_round, split)
+        dataset = pd.read_json(data_path, lines=True)
+        dataset = dataset[['context', 'hypothesis', 'label', 'uid']]  # get rid of unnecessary columns
+        dataset['label'] = dataset['label'].apply(replace_labels)  # ensures consistently named labels
+        dataset['dataset'] = 'ANLI_{}'.format(data_round)
 
     elif dataset_id == 'MNLI':
 
@@ -111,8 +108,8 @@ def read_dataset(input_dir, dataset_id, split, downsample_rate, seed):
         elif split == 'test':
             dataset = dataset[int((len(dataset)/2)):]
 
-        if 0.25 <= downsample_rate < 1.00 and split is not 'train':
-            dataset = dataset.sample(1000, random_state=seed)
+        # if 0.25 <= downsample_rate < 1.00 and split is not 'train':
+        #     dataset = dataset.sample(1000, random_state=seed)
 
 
 
@@ -212,6 +209,7 @@ class DataPool(Dataset):
         self.downsample_rate = config.downsample_rate
         self.max_length = config.max_length
         self.model_id = config.model_id
+        self.seed_datasets = config.seed_datasets
         self.random_seed = config.seed
 
         if split == 'train':
@@ -222,8 +220,9 @@ class DataPool(Dataset):
                                       split=split,
                                       downsample_rate=self.downsample_rate,
                                       seed=self.random_seed)
-            # label k samples randomly and put them in labeled pool L
-            self.L = self.label_instances_randomly(k=self.seed_size)
+            # then, we label k samples randomly and put them in labeled pool L
+            self.L = self.label_instances_randomly(k=self.seed_size,
+                                                   dataset_ids=self.seed_datasets)
 
             self.total_size = len(self.U) + len(self.L)
 
@@ -290,7 +289,7 @@ class DataPool(Dataset):
     def set_k(self, k):
         """
         if k is an integer we draw k samples from the unlabelled pool
-        if k is a percentage we draw the corresponding % from the unlabelled pool
+        if k is real-valued between 0 and 1 we draw the corresponding % from the unlabelled pool
         """
 
         if k == 0:
@@ -309,28 +308,35 @@ class DataPool(Dataset):
 
         return k
 
-    def label_instances_randomly(self, k):
+    def label_instances_randomly(self, k, dataset_ids):
         """
         This function randomly selects k examples from the unlabelled set U
         and transfers them to the labelled set L
+        :param dataset_ids:
         :param k: size of initial pool of labelled examples
         :return:
         """
 
         # select k instances from U to be labelled for initial seed L.
         # Make sure to remove these instances from U.
-        k = self.set_k(k)
+        k = self.set_k(k) # check if provided k is a percentage or an integer
         self.U = self.U.reset_index(drop=True)
 
-        print('Drawing {} random samples from unlabelled set U for labelled seed set L..'.format(k), flush=True)
+        print('Drawing {} random samples from {} from unlabelled set U for labelled seed set L'.format(k, dataset_ids),
+              flush=True)
 
         # initialize empty seed dataset L
         L = pd.DataFrame(columns=self.U.columns)
 
-        # select k random instances from U for 'labelling' and move them to L
-        random_indices = list(np.random.choice(a=len(self.U),
-                                               size=int(k),
-                                               replace=False))
+        # # select k random instances from U for 'labelling' and move them to L
+        # random_indices = list(np.random.choice(a=len(self.U),
+        #                                        size=int(k),
+        #                                        replace=False))
+
+        # From the unlabelled pool, consider all examples from the datasets that we want to use for the seed;
+        # Then, sample k examples from this subset and use the original index values to extract them from U via .iloc
+        # TODO check if correct
+        random_indices = self.U[self.U.Dataset.isin(dataset_ids)].sample(k).index.values
 
         labelled_examples = self.U.iloc[random_indices]
         L = L.append(labelled_examples).reset_index(drop=True)
@@ -546,7 +552,7 @@ class GenericDataModule(pl.LightningDataModule):
                           pin_memory=self.pin_memory,
                           drop_last=True)
 
-    def separate_test_loader(self, sub_datapool):
+    def separate_loader(self, sub_datapool):
 
         return DataLoader(dataset=sub_datapool,
                           collate_fn=self.batch_tokenize,
@@ -556,18 +562,23 @@ class GenericDataModule(pl.LightningDataModule):
                           pin_memory=self.pin_memory,
                           drop_last=True)
 
-    def get_separate_test_loaders(self):
+    def get_separate_loaders(self, split, dataset_ids):
 
-        test_loaders = []
-        aggregate_datapool = self.test  # self.test is a DataPool Obj;
+        if split == 'dev':
+            aggregate_datapool = self.val
+        elif split == 'test':
+            aggregate_datapool = self.test
+        else:
+            raise KeyError('Please specify from which split datasets should be separated')
 
-        for dataset_id in self.config.datasets:  # for each dataset seen during training
+        separate_loaders = []
+        for dataset_id in dataset_ids:  # for each dataset seen during training
             sub_datapool = copy.deepcopy(aggregate_datapool)  # make a clone the DataPool test-set object,
             sub_datapool.data = sub_datapool.L[sub_datapool.L['Dataset'] == dataset_id]  # filter based on dataset ID
-            sub_dataloader = self.separate_test_loader(sub_datapool=sub_datapool)  # create dataloader for subset
-            test_loaders.append(sub_dataloader)
+            sub_dataloader = self.separate_loader(sub_datapool=sub_datapool)  # create dataloader for subset
+            separate_loaders.append(sub_dataloader)
 
-        return test_loaders
+        return separate_loaders
 
     def has_unlabelled_data(self):
         return len(self.train.U) > 0

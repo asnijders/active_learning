@@ -108,23 +108,68 @@ def get_trainer(config, logger, batch_size=None, gpus=None):
     return trainer
 
 
-def test_model(dm, config, model, trainer, logger):
+def train_model(dm, config, model, logger, trainer):
+
+    # initialise dataloaders for current data
+    labelled_loader = dm.labelled_dataloader()  # dataloader with labelled training data
+
+    # one can either checkpoint based on single, or multiple-dataset dev performance
+    if config.checkpoint_datasets is None:
+        print('\nCheckpointing model weights based on aggregate dev performance on: {}'.format(config.datasets))
+        checkpoint_loader = dm.val_dataloader()
+
+    else:
+        print('\nCheckpointing model weights based on dev performance on: {}'.format(config.checkpoint_datasets))
+        # dev loader for specified checkpointing dataset(s)
+        checkpoint_loader = dm.get_separate_loaders(split='dev',
+                                                    dataset_ids=config.checkpoint_datasets)
+
+    # fine-tune model on (updated) labelled dataset L, from scratch, while checkpointing model weights
+    print('\nFitting model on updated labelled pool, from scratch', flush=True)
+    trainer.fit(model=model,
+                train_dataloaders=labelled_loader,
+                val_dataloaders=checkpoint_loader)
+
+    # return model checkpoint with best dev accuracy
+    if config.debug is False:
+        print('\nLoading checkpoint: {}'.format(trainer.checkpoint_callback.best_model_path))
+        model = TransformerModel.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
+
+    return model, dm, logger, trainer
+
+
+def evaluate_model(dm, config, model, trainer, logger, split):
     """
     fn for evaluating trained model on either:
     - separate test sets, in case of multiple datasets
     - single test set, in case of aggregate or single test set
+    :param split:
+    :param logger:
+    :param trainer:
     :param dm: datamodule obj
     :param config: argparse obj
     :param model: trained transformer instance
     :return: dictionary with test statistics
     """
 
-    if config.separate_test_sets is True:
-        print('Evaluating final model on separate test sets', flush=True)
-        test_loaders = dm.get_separate_test_loaders()
+    if split == 'test':
+        if config.separate_test_sets is True:
+            print('Evaluating best model on separate {} sets'.format(split), flush=True)
+            test_loaders = dm.get_separate_loaders(split=split,
+                                                   dataset_ids=config.datasets)
 
-        for test_loader, dataset_id in zip(test_loaders, config.datasets):
-            model.test_set_id = dataset_id + '_'
+            for test_loader, dataset_id in zip(test_loaders, config.datasets):
+                model.test_set_id = dataset_id + '_'
+                results = trainer.test(model, test_loader)
+
+                # log test results
+                log_results(logger=logger,
+                            results=results,
+                            dm=dm)
+
+        else:
+            print('Evaluating best model on aggregate {} set'.format(split), flush=True)
+            test_loader = dm.test_dataloader()
             results = trainer.test(model, test_loader)
 
             # log test results
@@ -132,16 +177,33 @@ def test_model(dm, config, model, trainer, logger):
                         results=results,
                         dm=dm)
 
-    else:
-        print('Evaluating final model on aggregate test set', flush=True)
-        test_loader = dm.test_dataloader()
-        results = trainer.test(model, test_loader)
+    elif split == 'dev':
+        if config.separate_eval_sets is True:
+            print('Evaluating best model on separate {} sets'.format(split), flush=True)
+            dev_loaders = dm.get_separate_loaders(split=split,
+                                                  dataset_ids=config.datasets)
 
-        # log test results
-        log_results(logger=logger,
-                    results=results,
-                    dm=dm)
+            for dev_loader, dataset_id in zip(dev_loaders, config.datasets):
+                model.dev_set_id = dataset_id + '_'
+                results = trainer.validate(model, dev_loader)
 
+                # log test results
+                log_results(logger=logger,
+                            results=results,
+                            dm=dm)
+
+            # reset dev set identifier to empty string
+            model.dev_set_id = ''
+
+        else:
+            print('Evaluating best model on aggregate {} set'.format(split), flush=True)
+            dev_loader = dm.val_dataloader()
+            results = trainer.validate(model, dev_loader)
+
+            # log test results
+            log_results(logger=logger,
+                        results=results,
+                        dm=dm)
 
 
 def log_percentages(mode, new_indices, logger, dm, epoch):

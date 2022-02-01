@@ -97,6 +97,7 @@ class TransformerModel(LightningModule):
         self.num_gpus = num_gpus
         self.separate_test_sets = separate_test_sets
         self.test_set_id = ''
+        self.dev_set_id = ''
 
         # self.accuracy = metrics.Accuracy() # for logging to lightning
         # load pre-trained, uncased, sequence-classification BERT model
@@ -149,8 +150,8 @@ class TransformerModel(LightningModule):
     def validation_step(self, batch, batch_idx):
 
         loss, acc = self._shared_eval_step(batch, batch_idx)
-        metrics = {"val_acc": acc,
-                   "val_loss": loss}
+        metrics = {'{}val_acc'.format(self.dev_set_id): acc,
+                   '{}val_loss'.format(self.dev_set_id): loss}
         self.log_dict(metrics,
                       batch_size=self.batch_size,
                       on_step=True,
@@ -158,19 +159,18 @@ class TransformerModel(LightningModule):
                       prog_bar=True,
                       logger=True,
                       sync_dist=False)
-        # self.log("val_acc", acc, prog_bar=True)
-        # self.log("val_loss", loss, prog_bar=True)
 
         return metrics
 
     def validation_end(self, outputs):
 
-        avg_loss = torch.stack([x['val_loss'] for x in outputs]).mean()
-        avg_acc = torch.stack([x['val_acc'] for x in outputs]).mean()
+        avg_loss = torch.stack([x['{}val_loss'.format(self.dev_set_id)] for x in outputs]).mean()
+        avg_acc = torch.stack([x['{}val_acc'.format(self.dev_set_id)] for x in outputs]).mean()
         return {
-            'val_loss': avg_loss,
-            'val_acc': avg_acc,
-            'progress_bar': {'val_loss': avg_loss, 'val_acc': avg_acc}}
+            '{}val_loss'.format(self.dev_set_id): avg_loss,
+            '{}val_acc'.format(self.dev_set_id): avg_acc,
+            'progress_bar': {'{}val_loss'.format(self.dev_set_id): avg_loss,
+                             '{}val_acc'.format(self.dev_set_id): avg_acc}}
 
     def test_step(self, batch, batch_idx):
 

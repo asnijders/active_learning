@@ -1,13 +1,13 @@
 #!/bin/bash
 
-#SBATCH --partition=gpu_titanrtx_shared
+#SBATCH --partition=gpu_titanrtx_short
 #SBATCH --gres=gpu:1
-#SBATCH --job-name=ANLI_baseline
+#SBATCH --job-name=bert_multi
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
-#SBATCH --time=01:30:00
+#SBATCH --time=00:10:00
 #SBATCH --mem=32000M
-#SBATCH --output=slurm/output_%A.out
+#SBATCH --output=slurm/multi_AL/bert/output_%A.out
 
 module purge
 module load 2021
@@ -32,23 +32,23 @@ srun python main.py \
             --input_dir "$TMPDIR/ard_data" \
             --output_dir "$TMPDIR/ard_output_dir_results" \
             --checkpoint_dir "$TMPDIR/ard_output_dir_checkpoints" \
+            --project_dir "test"
             --model_id="bert-base-uncased" \
-            --datasets="MNLI" \
-            --seed_datasets="MNLI" \
-            --checkpoint_datasets="MNLI" \
+            --datasets="MNLI,ANLI_R1,ANLI_R2,ANLI_R3" \
             --batch_size=32 \
             --acquisition_fn="random" \
-            --labelling_batch_size=0.0 \
-            --seed_size=1.0 \
+            --labelling_batch_size=7854 \
+            --seed_size=7854 \
             --downsample_rate=1.00 \
             --log_every=2 \
             --refresh_rate=25 \
             --seed=43 \
-            --al_iterations=0 \
-            --num_workers=8 \
+            --al_iterations=10 \
+            --num_workers=4 \
             --precision=16 \
             --dropout=0.3 \
             --lr=2e-5 \
             --max_epochs=5 \
             --monitor="val_loss" \
-            --uid="bert_MNLI_test_run" \
+
+cp -r "$TMPDIR"/ard_output_dir_results $HOME/active_learning/results
