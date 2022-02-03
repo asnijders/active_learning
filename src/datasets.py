@@ -104,8 +104,10 @@ def read_dataset(input_dir, dataset_id, split, downsample_rate, seed):
 
         # split dev into dev and test set
         if split == 'dev':
+            dataset = dataset.sample(frac=1) # reshuffle all rows in the dataframe
             dataset = dataset[:int((len(dataset)/2))]
         elif split == 'test':
+            dataset = dataset.sample(frac=1)  # reshuffle all rows in the dataframe
             dataset = dataset[int((len(dataset)/2)):]
 
         # if 0.25 <= downsample_rate < 1.00 and split is not 'train':

@@ -14,6 +14,25 @@ from src.models import TransformerModel
 import os
 
 
+def create_project_filepath(config):
+    """ Creates a logical filepath using provided experiment parameters """
+
+    mode = ''
+    if config.seed_size == 1.0:
+        mode = 'full-supervision'
+    else:
+        mode = 'active-learning'
+
+    filepath = 'project_{}/model_{}/data_{}/mode_{}'.format(config.project_dir,
+                                                            config.model_id,
+                                                            '-'.join(config.datasets),
+                                                            mode)
+
+    if config.checkpoint_datasets is not None:
+        filepath += '/checkpoint-data_{}'.format('-'.join(config.checkpoint_datasets))
+
+    return filepath
+
 # TODO put this in a Logger class
 def log_results(logger, results, dm):
 
@@ -67,7 +86,7 @@ def get_trainer(config, logger, batch_size=None, gpus=None):
                                                 mode=mode)
 
         # Init ModelCheckpoint callback, monitoring 'config.monitor'
-        run_dir = config.checkpoint_dir + '/' + config.uid + '/' + config.acquisition_fn + '/' + str(config.seed) + '/'
+        run_dir = config.checkpoint_dir + '/' + config.acquisition_fn + '/' + str(config.seed) + '/'
         checkpoint_callback = ModelCheckpoint(monitor=config.monitor,
                                               mode=mode,
                                               save_top_k=1,

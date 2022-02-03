@@ -20,7 +20,7 @@ from pytorch_lightning.strategies import DDPStrategy
 from src.models import TransformerModel
 from src.datasets import GenericDataModule
 from src.strategies import select_acquisition_fn
-from src.utils import log_percentages, get_trainer, del_checkpoint, get_model, evaluate_model, train_model
+from src.utils import log_percentages, get_trainer, del_checkpoint, get_model, evaluate_model, train_model, create_project_filepath
 from src.active import active
 
 logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
@@ -34,6 +34,17 @@ wandb.login()
 
 
 def main(args):
+
+    # init logger
+    wandb.init(config={'AL_iter': str(0),
+                       'mode': 'FS' if config.seed_size == 1.0 else 'AL'})
+    wandb.config.update(args)
+
+    # initialise PL logging
+    # project_filepath = create_project_filepath(config)
+    logger = WandbLogger(project="active_learning",
+                         save_dir=config.output_dir,
+                         log_model=False)
 
     print('\n -------------- Active Learning -------------- \n')
     # print CLI args
@@ -55,19 +66,6 @@ def main(args):
     # Build datamodule
     dm = GenericDataModule(config=config)
     dm.setup(stage='fit')
-
-    # init logger
-    wandb.init(config={'experiment_id' : str(config.uid),
-                       'acquisition_fn': str(config.acquisition_fn),
-                       'seed': str(config.seed),
-                       'AL_iter': str(0)})
-
-    # initialise PL logging and trainer objects
-    # TODO: add another CLI arg to specify whether a run is meant for testing purposes, or for actual experiments
-    # this may help to keep my experiments / logs a bit more organised
-    logger = WandbLogger(project="active_learning/{}".format(config.uid),
-                         save_dir=config.output_dir,
-                         log_model=False)
 
     # log makeup of initial labelled pool
     log_percentages(mode='makeup',
@@ -185,7 +183,7 @@ if __name__ == '__main__':
     parser.add_argument('--project_dir', default=None, type=str,
                         help='specify what project dir to write wandb experiment to')
 
-    parser.add_argument('--uid', default=None, type=str,
+    parser.add_argument('--array_uid', default=None, type=str,
                         help='unique ID of array job. useful for grouping multiple runs in wandb')
 
     # Experiment args
