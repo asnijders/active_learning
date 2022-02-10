@@ -96,7 +96,7 @@ def main(args):
                                                  logger=logger,
                                                  trainer=trainer)
 
-        # -------------------------------  Evaluating model on current labelled dataset ------------------------------
+        # ---------------------------------------------  Evaluating model  -------------------------------------------
         # evaluate best checkpoint on dev set
         evaluate_model(split='dev',
                        dm=dm,
@@ -160,6 +160,14 @@ def main(args):
                                              logger=logger,
                                              trainer=trainer)
 
+    # evaluate on dev set(s)
+    evaluate_model(split='dev',
+                   dm=dm,
+                   config=config,
+                   model=model,
+                   trainer=trainer,
+                   logger=wandb)
+
     # evaluate on test set(s)
     evaluate_model(split='test',
                    dm=dm,
@@ -182,7 +190,6 @@ if __name__ == '__main__':
                         help='specifies where on SCRATCH model checkpoints should be saved')
     parser.add_argument('--project_dir', default=None, type=str,
                         help='specify what project dir to write wandb experiment to')
-
     parser.add_argument('--array_uid', default=None, type=str,
                         help='unique ID of array job. useful for grouping multiple runs in wandb')
 
@@ -194,6 +201,11 @@ if __name__ == '__main__':
                         help='str to specify what nli datasets should be loaded'
                              'please separate datasets with a "," e.g.'
                              '--datasets="MNLI,SNLI,ANLI"')
+
+    parser.add_argument('--undersample', action='store_false',
+                        help='bool to specify whether majority training sets should be under sampled to'
+                             'match minority datasets in number of examples'
+                             'This results in a datapool where each sub-dataset is represented equally.')
 
     parser.add_argument('--seed_datasets', default=None, type=str,
                         help='str to specify which datasets should be used for initial seed'
@@ -218,7 +230,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--model_id', default='bert-base-uncased', type=str,
                         help='specifies which transformer is used for encoding sentence pairs'
-                             'Choose from: bert-base-uncased, bert-large-uncased, RoBERTa')
+                             'Choose from: bert-base-uncased, bert-large-uncased, roberta-base')
 
     parser.add_argument('--acquisition_fn', default='coreset', type=str,
                         help='specifies which acquisition function is used for pool-based active learning')
@@ -278,6 +290,7 @@ if __name__ == '__main__':
                         help='proportion of batches used in train/dev/test phase (useful for debugging)')
     parser.add_argument('--refresh_rate', default=250, type=int,
                         help='how often to refresh progress bar (in steps)')
+    parser.add_argument('--progress_bar', action='store_false', help='toggle progress bar')
 
     log_every = 50 if device_count() > 0 else 1
     parser.add_argument('--log_every', default=log_every, type=int,

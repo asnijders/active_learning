@@ -33,8 +33,8 @@ def create_project_filepath(config):
 
     return filepath
 
-# TODO put this in a Logger class
-def log_results(logger, results, dm):
+
+def log_results(logger, results, dm): # TODO put this in a Logger class
 
     # log training metrics
     results = results[0]
@@ -46,7 +46,9 @@ def log_results(logger, results, dm):
 
 
 def get_model(config):
-    """simple fn for initialising model"""
+    """
+    simple fn for initialising model
+    """
 
     model = TransformerModel(model_id=config.model_id,
                              dropout=config.dropout,
@@ -120,7 +122,7 @@ def get_trainer(config, logger, batch_size=None, gpus=None):
                       limit_train_batches=config.toy_run,
                       limit_test_batches=config.toy_run,
                       progress_bar_refresh_rate=config.refresh_rate,
-                      enable_progress_bar=True,
+                      enable_progress_bar=config.progress_bar,
                       # auto_scale_batch_size="binsearch",
                       precision=config.precision)
 
@@ -128,6 +130,15 @@ def get_trainer(config, logger, batch_size=None, gpus=None):
 
 
 def train_model(dm, config, model, logger, trainer):
+    """
+    Trains provided model on labelled data, whilst checkpointing on one or more datasets
+    :param dm: Data Module obj
+    :param config: argparse obj
+    :param model: TransformerModel instance
+    :param logger: logger obj
+    :param trainer: trainer obj
+    :return: saved model with lowest dev-loss
+    """
 
     # initialise dataloaders for current data
     labelled_loader = dm.labelled_dataloader()  # dataloader with labelled training data
@@ -178,7 +189,11 @@ def evaluate_model(dm, config, model, trainer, logger, split):
                                                    dataset_ids=config.datasets)
 
             for test_loader, dataset_id in zip(test_loaders, config.datasets):
+
+
                 model.test_set_id = dataset_id + '_'
+                model.init_metrics()
+                print('Test results for {}'.format(dataset_id), flush=True)
                 results = trainer.test(model, test_loader)
 
                 # log test results
@@ -186,9 +201,12 @@ def evaluate_model(dm, config, model, trainer, logger, split):
                             results=results,
                             dm=dm)
 
+            model.test_set_id = ''
+
         else:
             print('Evaluating best model on aggregate {} set'.format(split), flush=True)
             test_loader = dm.test_dataloader()
+            model.init_metrics()
             results = trainer.test(model, test_loader)
 
             # log test results
@@ -203,7 +221,10 @@ def evaluate_model(dm, config, model, trainer, logger, split):
                                                   dataset_ids=config.datasets)
 
             for dev_loader, dataset_id in zip(dev_loaders, config.datasets):
+
                 model.dev_set_id = dataset_id + '_'
+                model.init_metrics()
+                print('Validation results for {}'.format(dataset_id), flush=True)
                 results = trainer.validate(model, dev_loader)
 
                 # log test results
@@ -217,6 +238,7 @@ def evaluate_model(dm, config, model, trainer, logger, split):
         else:
             print('Evaluating best model on aggregate {} set'.format(split), flush=True)
             dev_loader = dm.val_dataloader()
+            model.init_metrics()
             results = trainer.validate(model, dev_loader)
 
             # log test results
@@ -242,6 +264,7 @@ def log_percentages(mode, new_indices, logger, dm, epoch):
 
     for key in ['Dataset', 'Label']:
 
+        # monitor composition of labelled pool over time
         if mode == 'makeup':
 
             labelled_examples = dm.train.L
@@ -250,6 +273,7 @@ def log_percentages(mode, new_indices, logger, dm, epoch):
             percentages['labelled_examples'] = len(dm.train.L)  # variable for x-axis: current L
             logger.log(percentages)
 
+        # monitor composition of each AL batch
         elif mode == 'active':
 
             new_examples = dm.train.U.iloc[new_indices]  # select queried examples from unlabelled pool
@@ -257,6 +281,18 @@ def log_percentages(mode, new_indices, logger, dm, epoch):
             percentages['labelled_examples'] = len(dm.train.L) + len(new_examples)  # variable for x-axis: old L + new batch
             percentages['AL_iter'] = epoch
             logger.log(percentages)
+
+            # determine the composition of the current pool of unlabelled examples
+            unlabelled_pool_composition = dm.train.U['Dataset'].value_counts(normalize=True).to_dict()
+
+            # determine the composition of the most recent batch of queries
+            new_batch_composition = new_examples['Dataset'].value_counts(normalize=True).to_dict()
+
+            # normalise composition of new batch by correcting for size of sub-dataset in unlabelled pool
+            normalised_proportions = {k + '_normalized': new_batch_composition[k]/unlabelled_pool_composition[k] for k,_ in new_batch_composition.items()}
+            normalised_proportions['AL_iter'] = epoch
+            normalised_proportions['labelled_examples'] = len(dm.train.L) + len(new_examples)  # TODO add a counter for the already labeled examples
+            logger.log(normalised_proportions)
 
     return None
 
@@ -269,11 +305,6 @@ def del_checkpoint(filepath):
 
     except Exception:
         pass
-
-
-def cleanup():
-
-    torch.distributed.destroy_process_group()
 
 
 def collect_garbage():

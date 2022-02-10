@@ -1,11 +1,11 @@
 #!/bin/bash
 
-#SBATCH --partition=gpu_titanrtx_short
+#SBATCH --partition=gpu_titanrtx_shared
 #SBATCH --gres=gpu:1
 #SBATCH --job-name=test_run
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=3
-#SBATCH --time=00:10:00
+#SBATCH --time=01:00:00
 #SBATCH --mem=32000M
 #SBATCH --output=slurm/output_%A.out
 
@@ -33,7 +33,7 @@ srun python main.py \
             --output_dir "$TMPDIR/ard_output_dir_results" \
             --checkpoint_dir "$TMPDIR/ard_output_dir_checkpoints" \
             --project_dir="test" \
-            --array_uid="label dist test" \
+            --array_uid="main test" \
             --model_id="bert-base-uncased" \
             --datasets="ANLI_R1, ANLI_R2, ANLI_R3, SNLI, MNLI" \
             --checkpoint_datasets="MNLI" \
@@ -41,7 +41,7 @@ srun python main.py \
             --seed_size=0.02 \
             --labelling_batch_size=0.02 \
             --al_iterations=24 \
-            --acquisition_fn="random" \
+            --acquisition_fn="max-entropy" \
             --dropout=0.3 \
             --lr=2e-5 \
             --batch_size=32 \

@@ -4,11 +4,11 @@
 #SBATCH --gres=gpu:1
 #SBATCH --job-name=array_run
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=3
 #SBATCH --time=18:00:00
 #SBATCH --mem=32000M
 #SBATCH --output=slurm/output_%A.out
-#SBATCH --array=1-15%8
+#SBATCH --array=1-25%8
 
 module purge
 module load 2021
@@ -35,22 +35,26 @@ srun python main.py \
             --input_dir "$TMPDIR/ard_data" \
             --output_dir "$TMPDIR/ard_output_dir_results" \
             --checkpoint_dir "$TMPDIR/ard_output_dir_checkpoints" \
-            --project_dir "array" \
+            --project_dir="array" \
+            --array_uid="experiment_0602" \
             --model_id="bert-base-uncased" \
-            --datasets="MNLI,ANLI_R1,ANLI_R2,ANLI_R3" \
-            --batch_size=32 \
-            --labelling_batch_size=7854 \
-            --seed_size=7854 \
-            --downsample_rate=1.00 \
-            --log_every=2 \
-            --refresh_rate=25 \
-            --al_iterations=10 \
-            --num_workers=4 \
-            --precision=16 \
+            --datasets="ANLI_R1, ANLI_R2, ANLI_R3, SNLI, MNLI" \
+            --checkpoint_datasets="MNLI" \
+            --downsample_rate=1.0 \
+            --seed_size=0.02 \
+            --labelling_batch_size=0.02 \
+            --al_iterations=24 \
             --dropout=0.3 \
             --lr=2e-5 \
-            --max_epochs=3 \
+            --batch_size=32 \
+            --max_epochs=4 \
+            --patience=1 \
             --monitor="val_loss" \
+            --num_workers=3 \
+            --precision=16 \
+            --log_every=2 \
+            --progress_bar \
+            --refresh_rate=25 \
             $(head -$SLURM_ARRAY_TASK_ID $HPARAMS_FILE | tail -1)
 
 cp -r "$TMPDIR"/ard_output_dir_results $HOME/active_learning/results

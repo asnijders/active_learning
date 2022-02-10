@@ -99,11 +99,17 @@ class TransformerModel(LightningModule):
         self.test_set_id = ''
         self.dev_set_id = ''
 
-        # self.accuracy = metrics.Accuracy() # for logging to lightning
         # load pre-trained, uncased, sequence-classification BERT model
-        # TODO make sure the correct from_pretrained model is being loaded
         self.tokenizer, self.encoder = get_model(model_id=model_id,
                                                  dropout=dropout)
+
+        # init metrics
+        self.init_metrics()
+
+    def init_metrics(self):
+        self.train_acc = torchmetrics.Accuracy()
+        self.val_acc = torchmetrics.Accuracy()
+        self.test_acc = torchmetrics.Accuracy()
 
     def deconstruct(self):
         self.encoder = None
@@ -136,7 +142,7 @@ class TransformerModel(LightningModule):
 
         loss = outputs.loss
         preds = outputs.logits
-        acc = accuracy(preds, labels)
+        acc = self.train_acc(preds, labels)
         metrics = {'train_acc': acc, 'loss': loss}
         self.log_dict(metrics,
                       batch_size=self.batch_size,
@@ -174,9 +180,24 @@ class TransformerModel(LightningModule):
 
     def test_step(self, batch, batch_idx):
 
-        loss, acc = self._shared_eval_step(batch, batch_idx)
+        input_ids = batch['input_ids']
+        token_type_ids = batch['token_type_ids']
+        attention_masks = batch['attention_masks']
+        labels = batch['labels']
+
+        outputs = self(input_ids=input_ids,
+                       attention_masks=attention_masks,
+                       token_type_ids=token_type_ids,
+                       labels=labels)
+
+        loss = outputs.loss
+        preds = outputs.logits
+        acc = self.test_acc(preds, labels)
+
+        # loss, acc = self._shared_eval_step(batch, batch_idx)
         metrics = {"{}test_acc".format(self.test_set_id): acc,
                    "{}test_loss".format(self.test_set_id): loss}
+
         self.log_dict(metrics,
                       batch_size=self.batch_size,
                       on_step=True,
@@ -185,6 +206,16 @@ class TransformerModel(LightningModule):
                       logger=True,
                       sync_dist=False)
         return metrics
+
+    # def test_end(self, outputs):
+    #
+    #     avg_loss = torch.stack([x['{}test_loss'.format(self.test_set_id)] for x in outputs]).mean()
+    #     avg_acc = torch.stack([x['{}test_acc'.format(self.test_set_id)] for x in outputs]).mean()
+    #     return {
+    #         '{}test_loss'.format(self.test_set_id): avg_loss,
+    #         '{}test_acc'.format(self.test_set_id): avg_acc,
+    #         'progress_bar': {'{}test_loss'.format(self.test_set_id): avg_loss,
+    #                          '{}test_acc'.format(self.test_set_id): avg_acc}}
 
     def _shared_eval_step(self, batch, batch_idx):
 
@@ -200,7 +231,7 @@ class TransformerModel(LightningModule):
 
         loss = outputs.loss
         preds = outputs.logits
-        acc = accuracy(preds, labels)
+        acc = self.val_acc(preds, labels)
         return loss, acc
 
     def predict_step(self, batch, batch_idx):
