@@ -93,7 +93,7 @@ def get_trainer(config, logger, batch_size=None, gpus=None):
                                               mode=mode,
                                               save_top_k=1,
                                               dirpath=run_dir,
-                                              filename='{epoch}-{val_loss:.2f}-{val_acc:.2f}',
+                                              filename='{epoch}-{step}-{val_loss:.2f}-{val_acc:.2f}',
                                               verbose=True)
 
         callbacks = [early_stopping_callback, checkpoint_callback]
@@ -116,6 +116,7 @@ def get_trainer(config, logger, batch_size=None, gpus=None):
                       deterministic=True,
                       enable_checkpointing=True,
                       enable_model_summary=False,
+                      val_check_interval=config.val_check_interval,
                       # profiler="simple",
                       num_sanity_val_steps=0,
                       limit_val_batches=config.toy_run,

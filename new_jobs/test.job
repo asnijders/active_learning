@@ -33,9 +33,9 @@ srun python main.py \
             --output_dir "$TMPDIR/ard_output_dir_results" \
             --checkpoint_dir "$TMPDIR/ard_output_dir_checkpoints" \
             --project_dir="test" \
-            --array_uid="label dist test" \
+            --array_uid="sub-epoch-eval test" \
             --model_id="bert-base-uncased" \
-            --datasets="ANLI_R1, ANLI_R2, ANLI_R3, SNLI, MNLI" \
+            --datasets="MNLI" \
             --checkpoint_datasets="MNLI" \
             --downsample_rate=1.0 \
             --seed_size=0.02 \
@@ -46,7 +46,7 @@ srun python main.py \
             --lr=2e-5 \
             --batch_size=32 \
             --max_epochs=4 \
-            --patience=1 \
+            --patience=3 \
             --monitor="val_loss" \
             --num_workers=3 \
             --precision=16 \

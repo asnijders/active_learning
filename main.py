@@ -207,6 +207,9 @@ if __name__ == '__main__':
                              'match minority datasets in number of examples'
                              'This results in a datapool where each sub-dataset is represented equally.')
 
+    parser.add_argument('--perturb', action='store_true',
+                        help='bool to specify whether training examples should be perturbed')
+
     parser.add_argument('--seed_datasets', default=None, type=str,
                         help='str to specify which datasets should be used for initial seed'
                              'please separate datasets with a "," e.g.'
@@ -256,6 +259,8 @@ if __name__ == '__main__':
                         help='no. of epochs to train for')
     parser.add_argument('--patience', default=3, type=int,
                         help='patience for early stopping')
+    parser.add_argument('--val_check_interval', default=0.2, type=float,
+                        help='how often to evaluate and checkpoint')
     parser.add_argument('--monitor', default='val_loss', type=str,
                         help='quantity monitored by early stopping / checkpointing callbacks.'
                              'choose between "val_loss" and "val_acc"')

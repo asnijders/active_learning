@@ -14,9 +14,34 @@ import sys
 import numpy as np
 import os
 import copy
+import random
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+def perturb_training_examples(dataset, fraction, random_state):
+
+    def shuffle(text):
+        text = ' '.join(random.sample(text.split(), len(text.split())))
+        return text
+
+    # 1. obtain random subset of dataset
+    random_subset = dataset.sample(frac=fraction, random_state=random_state)
+
+    # 2. apply perturbations (for now, just shuffling)
+    random_subset['Premise'] = random_subset['Premise'].apply(shuffle)
+    random_subset['Hypothesis'] = random_subset['Hypothesis'].apply(shuffle)
+
+    # 3. append a '_perturbed' substring to the Dataset_id
+    random_subset['Dataset'] = random_subset['Dataset'] + '_shuffled'
+
+    # 4. delete sampled rows from clean dataset, then append perturbed subset to dataset.
+    dataset.drop(random_subset.index, inplace=True)
+    dataset = pd.concat([random_subset, dataset])
+
+    print('NOTE: Shuffled training examples!', flush=True)
+
+    return dataset
 
 
 def downsample(dataset, dataset_id, downsample_rate, seed):
@@ -133,7 +158,7 @@ def read_dataset(input_dir, dataset_id, split, seed):
     return dataset
 
 
-def combine_datasets(input_dir, datasets, split, downsample_rate, seed, undersample):
+def combine_datasets(input_dir, datasets, split, downsample_rate, seed, undersample, perturb):
     """
     This function takes a list of NLI dataset names and
     concatenates all examples from each corresponding dataset
@@ -155,10 +180,10 @@ def combine_datasets(input_dir, datasets, split, downsample_rate, seed, undersam
         return dataframe
 
     # If we only consider a single dataset, we can just read and return it
-    if len(datasets) == 1:
-        dataset = read_dataset(input_dir, datasets[0], split, seed)
-        dataset = id2index(dataset)
-        return dataset
+    # if len(datasets) == 1:
+    #     dataset = read_dataset(input_dir, datasets[0], split, seed)
+    #     dataset = id2index(dataset)
+    #     return dataset
 
     # If we consider multiple datasets we have to combine them into a single dataset
     # 1. create empty dataframe to store examples from all datasets
@@ -183,10 +208,16 @@ def combine_datasets(input_dir, datasets, split, downsample_rate, seed, undersam
     if 0 < downsample_rate < 1 and split == 'train':
         combined_dataset = combined_dataset.sample(frac=downsample_rate)
 
+    # 4.3 Optional: add some perturbations to training set:
+    if perturb is True and split == 'train':
+        combined_dataset = perturb_training_examples(dataset=combined_dataset,
+                                                     fraction=0.5,
+                                                     random_state=seed)
+
     # 5. replace str ID with index-based ID system
     combined_dataset = id2index(combined_dataset)
 
-    for dataset_id in datasets:
+    for dataset_id in combined_dataset['Dataset'].unique().tolist():
         sub_dataset = combined_dataset[combined_dataset['Dataset'] == dataset_id]
         print(f"{'{} {} size:'.format(dataset_id, split):<30}{len(sub_dataset):<32}", flush=True)
 
@@ -223,6 +254,7 @@ class DataPool(Dataset):
         self.seed_datasets = config.seed_datasets
         self.random_seed = config.seed
         self.undersample = config.undersample
+        self.perturb = config.perturb
         self.L = []
 
         if split == 'train':
@@ -233,7 +265,8 @@ class DataPool(Dataset):
                                       split=split,
                                       downsample_rate=self.downsample_rate,
                                       seed=self.random_seed,
-                                      undersample=self.undersample)
+                                      undersample=self.undersample,
+                                      perturb=self.perturb)
             # then, we label k samples randomly and put them in labeled pool L
             self.L = self.label_instances_randomly(k=self.seed_size,
                                                    dataset_ids=self.seed_datasets)
@@ -248,7 +281,8 @@ class DataPool(Dataset):
                                       split=split,
                                       downsample_rate=self.downsample_rate,
                                       seed=self.random_seed,
-                                      undersample=self.undersample)
+                                      undersample=self.undersample,
+                                      perturb=self.perturb)
 
         self.data = self.L
         self.label2id = {"entailment": 0,
@@ -610,7 +644,6 @@ class GenericDataModule(pl.LightningDataModule):
 
     def dump_csv(self):
 
-        self.val.L.to_csv(path_or_buf='{}/val_pool.csv'.format(self.config.output_dir))
-        self.test.L.to_csv(path_or_buf='{}/test_pool.csv'.format(self.config.output_dir))
+        self.train.U.to_csv(path_or_buf='{}/perturbed_U_pool.csv'.format(self.config.output_dir))
         return None
 
