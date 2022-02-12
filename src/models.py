@@ -451,7 +451,7 @@ class TransformerModel(LightningModule):
                       token_type_ids=token_type_ids,
                       labels=labels)
 
-        embedding = output.hidden_states[-1][:, 0, :].detach().unsqueeze(1).cpu().numpy()
+        embedding = output.hidden_states[-1][:, 0, :].detach().unsqueeze(1).cpu()
 
         return embedding
 

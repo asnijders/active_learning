@@ -15,6 +15,7 @@ import numpy as np
 import os
 import copy
 import random
+from src.utils import get_trainer
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -414,6 +415,7 @@ class DataPool(Dataset):
         #  and exits the inference process unshuffled. but maybe this is not the case?
 
         if len(indices) > len(self.U):
+            print('More indices gathered than remaining unlabelled examples. This should not happen!', flush=True)
             indices = indices[:len(self.U)]
 
         # print('indice length:', flush=True)
@@ -589,13 +591,13 @@ class GenericDataModule(pl.LightningDataModule):
                           pin_memory=self.pin_memory,
                           drop_last=True)
 
-    def unlabelled_dataloader(self, batch_size=None):
+    def unlabelled_dataloader(self, batch_size=None, shuffle=False):
 
         batch_size = self.config.batch_size if batch_size is None else batch_size
         self.train.set_mode('U')
         return DataLoader(self.train,
                           collate_fn=self.batch_tokenize,
-                          shuffle=False,
+                          shuffle=shuffle,
                           batch_size=batch_size,
                           num_workers=self.config.num_workers,
                           pin_memory=self.pin_memory,
@@ -646,4 +648,3 @@ class GenericDataModule(pl.LightningDataModule):
 
         self.train.U.to_csv(path_or_buf='{}/perturbed_U_pool.csv'.format(self.config.output_dir))
         return None
-

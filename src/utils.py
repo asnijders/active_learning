@@ -98,10 +98,12 @@ def get_trainer(config, logger, batch_size=None, gpus=None):
 
         callbacks = [early_stopping_callback, checkpoint_callback]
         epochs = config.max_epochs
+        val_check_interval = config.val_check_interval
 
     else:
         callbacks = None
         epochs = 1
+        val_check_interval = 1
 
     if gpus is None:
         gpus = config.gpus
@@ -116,15 +118,13 @@ def get_trainer(config, logger, batch_size=None, gpus=None):
                       deterministic=True,
                       enable_checkpointing=True,
                       enable_model_summary=False,
-                      val_check_interval=config.val_check_interval,
-                      # profiler="simple",
+                      val_check_interval=val_check_interval,
                       num_sanity_val_steps=0,
                       limit_val_batches=config.toy_run,
                       limit_train_batches=config.toy_run,
                       limit_test_batches=config.toy_run,
                       progress_bar_refresh_rate=config.refresh_rate,
                       enable_progress_bar=config.progress_bar,
-                      # auto_scale_batch_size="binsearch",
                       precision=config.precision)
 
     return trainer

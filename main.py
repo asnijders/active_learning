@@ -111,7 +111,7 @@ def main(args):
             break
 
         # initialise acquisition function
-        acquisition_fn = select_acquisition_fn(fn_id=config.acquisition_fn)
+        acquisition_fn = select_acquisition_fn(fn_id=config.acquisition_fn, logger=logger)
 
         # determine instances for labeling using provided acquisition fn
         to_be_labelled = acquisition_fn.acquire_instances(config=config,
