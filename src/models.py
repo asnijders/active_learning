@@ -254,6 +254,9 @@ class TransformerModel(LightningModule):
         elif self.acquisition_fn == 'coreset':
             return self.embedding_step(batch, batch_idx)
 
+        elif self.acquisition_fn == 'dal':
+            return self.embedding_step(batch, batch_idx)
+
     def on_predict_epoch_end(self, results):
 
         """

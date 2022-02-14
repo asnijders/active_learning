@@ -298,11 +298,12 @@ def log_percentages(mode, new_indices, logger, dm, epoch):
     return None
 
 
-def del_checkpoint(filepath):
+def del_checkpoint(filepath, verbose=True):
 
     try:
         os.remove(filepath)
-        print('Removed checkpoint at {}!'.format(filepath), flush=True)
+        if verbose:
+            print('Removed checkpoint at {}!'.format(filepath), flush=True)
 
     except Exception:
         pass

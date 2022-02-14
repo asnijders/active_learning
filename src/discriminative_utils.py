@@ -18,7 +18,7 @@ def get_MLP_trainer(config, logger):
     mode = "max"
 
     # Init early stopping
-    early_stopping_callback = EarlyStopping(monitor="train_acc",
+    early_stopping_callback = EarlyStopping(monitor="discriminative_train_acc",
                                             min_delta=0.00,
                                             patience=config.patience,
                                             verbose=True,
@@ -26,7 +26,7 @@ def get_MLP_trainer(config, logger):
 
     # Init ModelCheckpoint callback, monitoring 'config.monitor'
     run_dir = config.checkpoint_dir + '/' + config.acquisition_fn + '/' + str(config.seed) + '/'
-    checkpoint_callback = ModelCheckpoint(monitor="train_acc",
+    checkpoint_callback = ModelCheckpoint(monitor="discriminative_train_acc",
                                           mode=mode,
                                           save_top_k=1,
                                           dirpath=run_dir,
@@ -50,6 +50,8 @@ def get_MLP_trainer(config, logger):
                       progress_bar_refresh_rate=config.refresh_rate,
                       enable_progress_bar=config.progress_bar,
                       precision=config.precision)
+
+    return trainer
 
 
 class EmbeddingPool(Dataset):
@@ -89,13 +91,21 @@ class EmbeddingPool(Dataset):
             self.data = self.unlabeled_data
 
     def label_instances(self, indices):
+        """
+        Takes a list of integer indices;
+        iterates over training set and adds label for unlabeled examples
+        :param indices: list of integers
+        :return: None
+        """
 
         for idx in indices:
             sample = self.train_data[idx]
             example = sample[0]
             label = 1
+
             self.train_data[idx] = (example, label)
 
+        return None
 
     def __len__(self):
         return len(self.data)
@@ -117,19 +127,20 @@ class EmbeddingPool(Dataset):
 
 class DiscriminativeDataModule(pl.LightningDataModule):
 
-    def __init__(self, config, dm, model):
+    def __init__(self, config, dm, model, disc_batch_size):
         super().__init__()
 
         self.config = config
         self.train = EmbeddingPool(config=config,
                                    dm=dm,
                                    model=model)
+        self.batch_size = disc_batch_size
 
     def train_loader(self, shuffle=True):
         self.train.set_data('all')
         return DataLoader(self.train,
                           shuffle=shuffle,
-                          batch_size=64,
+                          batch_size=self.batch_size,
                           num_workers=self.config.num_workers,
                           drop_last=False)
 
@@ -137,14 +148,14 @@ class DiscriminativeDataModule(pl.LightningDataModule):
         self.train.set_data('U')
         return DataLoader(self.train,
                           shuffle=False,
-                          batch_size=64,
+                          batch_size=self.batch_size,
                           num_workers=self.config.num_workers,
                           drop_last=False)
 
 
 class DiscriminativeMLP(pl.LightningModule):
 
-    def __init__(self):
+    def __init__(self, batch_size=64):
         super().__init__()
 
         self.layers = nn.Sequential(
@@ -154,6 +165,8 @@ class DiscriminativeMLP(pl.LightningModule):
         )
 
         self.ce = nn.CrossEntropyLoss()
+        self.softmax = nn.Softmax(dim=1)
+        self.batch_size = batch_size
 
         # hparams
         self.lr = 0.001  # learning rate
@@ -167,16 +180,20 @@ class DiscriminativeMLP(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
 
-        example = batch['embedding']
+        # get x, y from batch
+        examples = batch['embedding']
         labels = batch['label']
 
-        outputs = self(example)
+        # forward pass + loss
+        outputs = self(examples)
+        loss = self.ce(outputs, labels)
 
-        loss = outputs.loss
-        preds = outputs.logits
+        # get preds, compute acc
+        preds = self.softmax(outputs)
         acc = self.train_acc(preds, labels)
-        metrics = {'discriminative_train_acc': acc, 'discriminative_loss': loss}
 
+        # log metrics and return
+        metrics = {'discriminative_train_acc': acc, 'discriminative_loss': loss}
         self.log_dict(metrics,
                       batch_size=self.batch_size,
                       on_step=True,
@@ -185,12 +202,11 @@ class DiscriminativeMLP(pl.LightningModule):
                       logger=True,
                       sync_dist=False)
 
-        return metrics
+        return loss
 
     def predict_step(self, batch, batch_idx):
 
-        example = batch['embedding']
-        outputs = self(example)
-        prediction = outputs.logits.detach().cpu().numpy()
+        examples = batch['embedding']
+        predictions = self.softmax(self(examples))
 
-        return prediction
+        return predictions.detach().cpu().numpy()

@@ -33,15 +33,15 @@ srun python main.py \
             --output_dir "$TMPDIR/ard_output_dir_results" \
             --checkpoint_dir "$TMPDIR/ard_output_dir_checkpoints" \
             --project_dir="test" \
-            --array_uid="coreset test" \
+            --array_uid="dal test" \
             --model_id="bert-base-uncased" \
             --datasets="MNLI" \
             --checkpoint_datasets="MNLI" \
-            --downsample_rate=0.01 \
+            --downsample_rate=1.0 \
             --seed_size=500 \
-            --labelling_batch_size=4000 \
-            --al_iterations=24 \
-            --acquisition_fn="coreset" \
+            --labelling_batch_size=500 \
+            --al_iterations=10 \
+            --acquisition_fn="dal" \
             --dropout=0.3 \
             --lr=2e-5 \
             --batch_size=32 \

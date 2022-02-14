@@ -307,69 +307,118 @@ class DiscriminativeActiveLearner(AcquisitionFunction):
         self.sub_queries = 10
         self.logger = logger
 
+    def train_discriminator(self, config, logger, discriminative_dm):
+
+        # init MLP discriminator model
+        model = DiscriminativeMLP(batch_size=64)
+
+        # init trainer obj
+        trainer = get_MLP_trainer(config=config, logger=logger)
+
+        # init dataloader for unlabeled + labeled
+        train_loader = discriminative_dm.train_loader()
+
+        # train MLP discriminator on unlabeled + labeled data
+        trainer.fit(model=model, train_dataloaders=train_loader)
+
+        # load model with best train accuracy
+        # print('\nLoading checkpoint for discriminator: {}'.format(trainer.checkpoint_callback.best_model_path),
+        #       flush=True)
+        model = DiscriminativeMLP.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
+
+        return model
+
+    def get_predictions(self, model, discriminative_dm, trainer):
+
+        # init dataloader for unlabeled data
+        unlabeled_loader = discriminative_dm.unlabeled_loader()
+
+        # run inference on unlabeled data
+        predictions = trainer.predict(model, unlabeled_loader)
+
+        # concatenate list of arrays to single array along batch dim
+        predictions = np.concatenate(predictions, axis=0)
+
+        # we are interested in examples where the model is most confident about them being UNLABELED (index = 0)
+        predictions = predictions[:, 0]  # select all rows, first column
+        predictions = np.argsort(predictions)[::-1]  # sort model confidence in descending order
+
+        return predictions
+
     def acquire_instances(self, config, model, dm, k):
 
+        # construct dataset for learned representations
         discriminative_dm = DiscriminativeDataModule(config=config,
                                                      model=model,
-                                                     dm=dm)
+                                                     dm=dm,
+                                                     disc_batch_size=64)
 
+        # define acquisition parameters
         sub_sample_size = int(k/self.sub_queries)
         labeled_so_far = 0
         iteration = 0
-        all_indices = []
+        already_seen = []
+
+        # loop until k examples have been labeled
         while labeled_so_far < k:
             if labeled_so_far + sub_sample_size > k:
                 sub_sample_size = k - labeled_so_far
 
+            dal_start = time.time()
             print('DAL Iteration: {}'.format(iteration+1), flush=True)
             iteration += 1
 
-            # init MLP discriminator model
-            model = DiscriminativeMLP()
-            # init trainer obj
-            trainer = get_MLP_trainer(config=config, logger=self.logger)
-            # init dataloader for unlabeled + labeled
-            train_loader = discriminative_dm.train_loader()
-            # train MLP discriminator on unlabeled + labeled data
-            trainer.fit(model=model, train_dataloaders=train_loader)
-            # load model with best train accuracy
-            print('\nLoading checkpoint for discriminator: {}'.format(trainer.checkpoint_callback.best_model_path), flush=True)
-            model = DiscriminativeMLP.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
-            # init dataloader for unlabeled data
-            unlabeled_loader = discriminative_dm.unlabeled_loader()
-            # run inference on unlabeled data
-            predictions = trainer.predict(model, unlabeled_loader)
-            # take predictions with highest likelihood of belonging to labeled class
+            # train discriminator on unlabeled + labeled data
+            model, trainer = self.train_discriminator(config=config,
+                                                      logger=self.logger,
+                                                      discriminative_dm=discriminative_dm)
 
-            # TODO: add a step here to filter for instances where I already picked a certain example
-            # first return a list of the indices corresponding to the sorted predictions from hi to low
-            max_prediction_indices = np.argpartition(predictions[:, 1])
-            # then fill up the sub_query
-            sub_batch = []
-            # for idx in max_prediction_indices:
+            # perform inference on unlabeled data
+            # obtain predictions for which model is most confident of them being unlabeled
+            predictions = self.get_predictions(model=model,
+                                               trainer=trainer,
+                                               discriminative_dm=discriminative_dm)
 
-            # delete checkpoint
-            del_checkpoint(trainer.checkpoint_callback.best_model_path)
-
-            # Problem: I need to move the newly selected indices from the unlabeled pool since we know that they will be
-            # labeled in the future (so we can already assume them to be labeled for the next DAL iteration)
-            # however, if I move them and reset the index for the unlabeled indices, the indices do no longer correspond
-            # to the underlying unlabelled data pool when we're actually going to label the new batch!
+            # Problem: per sub-batch, I need to move the newly selected indices from the unlabeled pool since we know
+            # that they will be labeled in the future (so we can already assume them to be labeled for the next
+            # DAL iteration. if I move them and reset the index for the unlabeled ex., the indices no longer correspond
+            # to the underlying unlabelled data pool when we're _actually_ going to label the new batch!
             # one way to circumvent is to keep track of which examples we plan on labelling. in the meantime, in the
             # 'unlabeled' pool I can toggle the labels to 1, so that when the model gets trained it now considers them
             # as 'labeled' examples. In the meantime, I don't change anything in the unlabeled pool.
             # When I then select indices for the next DAL iteration, I can check whether I already picked them before,
             # and if so I can just skip them.
+
+            # first return a list of the indices corresponding to the sorted predictions from hi to low
+            # then fill up the sub_query
+            sub_batch = []  # keep track of indices for sub_query
+            for index in predictions:
+                if index not in already_seen:  # check whether an index was already seen during a previous round
+                    sub_batch.append(index)
+                if len(sub_batch) >= sub_sample_size:  # stop when enough examples for sub-query have been accumulated
+                    break
+
+            # label new sub-batch of unlabeled examples in _training_ set
             discriminative_dm.train.label_instances(sub_batch)
-            all_indices + sub_batch
 
-        #   2.3 move these instances from the unlabeled pool to the labeled pool (i.e. for the learned representations!) and repeat until we have a full batch
+            # add these indices to running list in case we encounter them again in next round
+            already_seen.extend(sub_batch)
+
+            # add ex. counter
+            labeled_so_far += len(sub_batch)
+
+            # delete checkpoint for this sub-round
+            del_checkpoint(trainer.checkpoint_callback.best_model_path, verbose=False)
+
+            print('Labeled {} new examples. Time required: {}'.format(len(sub_batch),
+                                                                      time.time() - dal_start), flush=True)
+
         # 3. return complete acquired batch
+        assert len(already_seen) == len(set(already_seen))
+        return already_seen
 
-        return all_indices
 
-
-def select_acquisition_fn(fn_id), logger:
+def select_acquisition_fn(fn_id, logger):
     """
     This function takes a acquisition function id and returns
     an instance of the corresponding AcquisitionFunction object
