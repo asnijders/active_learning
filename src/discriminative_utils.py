@@ -7,6 +7,7 @@ from torch.nn import functional as F
 from torch import nn
 from pytorch_lightning.core.lightning import LightningModule
 from src.utils import get_trainer
+import gc
 
 from pytorch_lightning import Trainer
 from torch.optim import Adam
@@ -18,23 +19,24 @@ def get_MLP_trainer(config, logger):
     mode = "max"
 
     # Init early stopping
-    early_stopping_callback = EarlyStopping(monitor="discriminative_train_acc",
-                                            min_delta=0.00,
-                                            patience=config.patience,
+    early_stopping_callback = EarlyStopping(monitor="discriminative_train_acc_epoch",
+                                            min_delta=0.000,
+                                            patience=40,
                                             verbose=True,
-                                            mode=mode)
+                                            mode=mode,
+                                            stopping_threshold=0.95)
 
     # Init ModelCheckpoint callback, monitoring 'config.monitor'
     run_dir = config.checkpoint_dir + '/' + config.acquisition_fn + '/' + str(config.seed) + '/'
-    checkpoint_callback = ModelCheckpoint(monitor="discriminative_train_acc",
+    checkpoint_callback = ModelCheckpoint(monitor="discriminative_train_acc_epoch",
                                           mode=mode,
                                           save_top_k=1,
                                           dirpath=run_dir,
-                                          filename='discriminative-{epoch}-{step}-{val_loss:.2f}-{val_acc:.2f}',
+                                          filename='discriminative-{epoch}-{step}-{discriminative_loss_epoch:.2f}-{discriminative_train_acc:.2f}',
                                           verbose=True)
 
     callbacks = [early_stopping_callback, checkpoint_callback]
-    epochs = 5
+    epochs = 40
 
     trainer = Trainer(gpus=config.gpus,
                       strategy=config.strategy,
@@ -48,7 +50,7 @@ def get_MLP_trainer(config, logger):
                       enable_model_summary=False,
                       num_sanity_val_steps=0,
                       progress_bar_refresh_rate=config.refresh_rate,
-                      enable_progress_bar=config.progress_bar,
+                      enable_progress_bar=True,
                       precision=config.precision)
 
     return trainer
@@ -83,6 +85,7 @@ class EmbeddingPool(Dataset):
         labeled_data = [(example, 1) for example in labeled_embeddings]
         self.train_data = unlabeled_data + labeled_data
         self.unlabeled_data = unlabeled_data
+        self.data = self.train_data
 
     def set_data(self, split):
         if split == 'all':
@@ -159,9 +162,13 @@ class DiscriminativeMLP(pl.LightningModule):
         super().__init__()
 
         self.layers = nn.Sequential(
-            nn.Linear(768, 256),
-            nn.ReLU(),
-            nn.Linear(256, 2),
+            nn.Linear(768, 512),
+            nn.ReLU(inplace=True),
+            nn.Linear(512, 256),
+            nn.ReLU(inplace=True),
+            nn.Linear(256, 128),
+            nn.ReLU(inplace=True),
+            nn.Linear(128, 2)
         )
 
         self.ce = nn.CrossEntropyLoss()
@@ -169,7 +176,7 @@ class DiscriminativeMLP(pl.LightningModule):
         self.batch_size = batch_size
 
         # hparams
-        self.lr = 0.001  # learning rate
+        self.lr = 0.0001  # learning rate
         self.train_acc = torchmetrics.Accuracy()
 
     def configure_optimizers(self):
@@ -183,6 +190,10 @@ class DiscriminativeMLP(pl.LightningModule):
         # get x, y from batch
         examples = batch['embedding']
         labels = batch['label']
+
+        # print('Learned Representation Examples and labels:', flush=True)
+        # print(examples, flush=True)
+        # print(labels, flush=True)
 
         # forward pass + loss
         outputs = self(examples)

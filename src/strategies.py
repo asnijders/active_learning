@@ -29,11 +29,12 @@ import copy
 from pytorch_lightning import Trainer
 from src.utils import get_trainer
 import time
+import gc
 
 # local imports
 from src.utils import del_checkpoint
 from src.coresets import CoresetGreedy, CoreSetMIPSampling
-from src.discriminative_utils import EmbeddingPool, DiscriminativeDataModule, DiscriminativeMLP, get_MLP_trainer
+from src.discriminative_utils import DiscriminativeDataModule, DiscriminativeMLP, get_MLP_trainer
 
 
 def get_predictions(datamodule, config, model):
@@ -322,11 +323,11 @@ class DiscriminativeActiveLearner(AcquisitionFunction):
         trainer.fit(model=model, train_dataloaders=train_loader)
 
         # load model with best train accuracy
-        # print('\nLoading checkpoint for discriminator: {}'.format(trainer.checkpoint_callback.best_model_path),
-        #       flush=True)
+        print('\nLoading checkpoint for discriminator: {}'.format(trainer.checkpoint_callback.best_model_path),
+              flush=True)
         model = DiscriminativeMLP.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
 
-        return model
+        return model, trainer
 
     def get_predictions(self, model, discriminative_dm, trainer):
 
@@ -347,6 +348,9 @@ class DiscriminativeActiveLearner(AcquisitionFunction):
 
     def acquire_instances(self, config, model, dm, k):
 
+        # timeit
+        dal_start = time.time()
+
         # construct dataset for learned representations
         discriminative_dm = DiscriminativeDataModule(config=config,
                                                      model=model,
@@ -364,8 +368,6 @@ class DiscriminativeActiveLearner(AcquisitionFunction):
             if labeled_so_far + sub_sample_size > k:
                 sub_sample_size = k - labeled_so_far
 
-            dal_start = time.time()
-            print('DAL Iteration: {}'.format(iteration+1), flush=True)
             iteration += 1
 
             # train discriminator on unlabeled + labeled data
@@ -373,8 +375,8 @@ class DiscriminativeActiveLearner(AcquisitionFunction):
                                                       logger=self.logger,
                                                       discriminative_dm=discriminative_dm)
 
-            # perform inference on unlabeled data
-            # obtain predictions for which model is most confident of them being unlabeled
+            # perform inference on unlabeled data;
+            # obtain predictions for which the model is most confident of them being unlabeled
             predictions = self.get_predictions(model=model,
                                                trainer=trainer,
                                                discriminative_dm=discriminative_dm)
@@ -409,11 +411,19 @@ class DiscriminativeActiveLearner(AcquisitionFunction):
 
             # delete checkpoint for this sub-round
             del_checkpoint(trainer.checkpoint_callback.best_model_path, verbose=False)
+            del model
+            del trainer
+            gc.collect()
 
-            print('Labeled {} new examples. Time required: {}'.format(len(sub_batch),
-                                                                      time.time() - dal_start), flush=True)
+            print('DAL Iteration: {}. Labeled {} new examples.'.format(iteration,
+                                                                       len(sub_batch), flush=True))
 
         # 3. return complete acquired batch
+        print('Time needed for {} sub-queries for {} examples: {} seconds'.format(iteration,
+                                                                                  k,
+                                                                                  time.time()-dal_start),
+              flush=True)
+
         assert len(already_seen) == len(set(already_seen))
         return already_seen
 
