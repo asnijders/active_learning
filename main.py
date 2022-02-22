@@ -21,7 +21,6 @@ from src.models import TransformerModel
 from src.datasets import GenericDataModule
 from src.strategies import select_acquisition_fn
 from src.utils import log_percentages, get_trainer, del_checkpoint, get_model, evaluate_model, train_model, create_project_filepath
-from src.active import active
 
 logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
 logging.getLogger("transformers").setLevel(logging.WARNING)
