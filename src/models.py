@@ -52,6 +52,12 @@ def get_model(model_id, dropout):
 
                 done = True
 
+            elif model_id == 'roberta-large':
+                tokenizer = AutoTokenizer.from_pretrained(model_id)
+                model = AutoModelForSequenceClassification.from_pretrained(model_id, config=model_config)
+
+                done = True
+
             elif model_id == 'bert-large-uncased':
                 tokenizer = AutoTokenizer.from_pretrained(model_id)
                 model = AutoModelForSequenceClassification.from_pretrained(model_id, config=model_config)

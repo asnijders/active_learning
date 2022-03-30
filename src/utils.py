@@ -119,7 +119,7 @@ def get_trainer(config, logger, batch_size=None, gpus=None):
                       enable_checkpointing=True,
                       enable_model_summary=False,
                       val_check_interval=val_check_interval,
-                      num_sanity_val_steps=0,
+                      num_sanity_val_steps=1,
                       limit_val_batches=config.toy_run,
                       limit_train_batches=config.toy_run,
                       limit_test_batches=config.toy_run,
@@ -222,6 +222,12 @@ def evaluate_model(dm, config, model, trainer, logger, split):
                                                   dataset_ids=config.datasets)
 
             for dev_loader, dataset_id in zip(dev_loaders, config.datasets):
+
+                # TODO add a flag here to disable multi-dev-set evaluation for non-AL runs
+                if config.data_ratios is not None: # only applies if we're not doing AL
+                    if dataset_id != config.checkpoint_datasets[0]:
+                        print('Validation Warning: non-AL run - skipping evaluation on {} to save compute'.format(dataset_id), flush=True)
+                        continue
 
                 model.dev_set_id = dataset_id + '_'
                 model.init_metrics()

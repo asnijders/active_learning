@@ -74,7 +74,10 @@ def main(args):
                     epoch=None)
 
     # --------------------------------------- Pool-based active learning ---------------------------------------------
-    print('\nStarting Active Learning process with strategy: {}'.format(config.acquisition_fn))
+    if config.al_iterations > 0:
+        print('\nStarting Active Learning process with strategy: {}'.format(config.acquisition_fn))
+    else:
+        print('\nSkipping Active Learning loop - will only train/val/test using labeled set')
     config.labelling_batch_size = dm.train.set_k(config.labelling_batch_size)
     for i in range(config.al_iterations):
 
@@ -126,7 +129,8 @@ def main(args):
                         epoch=i)
 
         # label new instances
-        dm.train.label_instances(to_be_labelled)
+        dm.train.label_instances(indices=to_be_labelled,
+                                 active_round=i+1)
 
         # log composition of updated labelled pool
         log_percentages(mode='makeup',
@@ -200,6 +204,12 @@ if __name__ == '__main__':
                         help='str to specify what nli datasets should be loaded'
                              'please separate datasets with a "," e.g.'
                              '--datasets="MNLI,SNLI,ANLI"')
+    parser.add_argument('--data_ratios', default=None, type=str,
+                        help='str to specify in what ratios each dataset should be downsampled'
+                             'e.g. for datasets=MNLI,ANLI,WANLI, an argument for ratios is 0.2,0.4,0.4')
+
+    parser.add_argument('--max_pool_size', default=None, type=int,
+                        help='specifies how many training examples should end up in pool')
 
     parser.add_argument('--undersample', action='store_false',
                         help='bool to specify whether majority training sets should be under sampled to'
@@ -315,6 +325,11 @@ if __name__ == '__main__':
         config.seed_size = int(config.seed_size)
     if config.labelling_batch_size > 1:
         config.labelling_batch_size = int(config.labelling_batch_size)
+
+    # convert comma-separated data_ratios str to list of floats:
+    if config.data_ratios is not None:
+        config.data_ratios = config.data_ratios.split(',')
+        config.data_ratios = [float(substr) for substr in config.data_ratios]
 
     if config.checkpoint_datasets is not None:
         config.checkpoint_datasets = config.checkpoint_datasets.upper().replace(' ', '').split()

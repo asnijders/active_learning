@@ -16,9 +16,11 @@ import os
 import copy
 import random
 from src.utils import get_trainer
+from pathlib import Path
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 
 def perturb_training_examples(dataset, fraction, random_state):
 
@@ -85,6 +87,36 @@ def undersample_to_smallest(df, seed):
     return df
 
 
+def apply_ratios(pool, dataset_ids, data_ratios, max_pool_size, seed):
+    """
+    This function takes a data pool and applies a provided list of ratios such that the pool is comprised of a
+    particular combination over sources where ||pool|| = max_pool_size
+    :param pool:
+    :param dataset_ids:
+    :param data_ratios:
+    :param max_pool_size:
+    :param seed:
+    :return:
+    """
+
+    dataset_list = []
+
+    for i in range(len(dataset_ids)):
+
+        dataset_id = dataset_ids[i]
+        fraction = data_ratios[i]
+        num_samples = int(fraction * max_pool_size)
+        sub_dataset = pool[pool['Dataset'] == dataset_id]
+        dataset_list.append(sub_dataset.sample(num_samples, random_state=seed))
+
+    new_pool = pd.concat(dataset_list, axis=0)
+
+    print(new_pool.groupby('Dataset').count(), flush=True)
+    print(new_pool.groupby('Label').count(), flush=True)
+
+    return new_pool
+
+
 def read_dataset(input_dir, dataset_id, split, seed):
     """
     This function takes a dataset id and reads the corresponding .json split in an appropriate Pandas DataFrame
@@ -112,6 +144,7 @@ def read_dataset(input_dir, dataset_id, split, seed):
         dataset['dataset'] = 'SNLI'
         dataset = dataset.drop(dataset[dataset.gold_label.str.contains('-')].index)  # drop examples with no gold label
 
+    # load separate ANLI rounds
     elif dataset_id in anli_rounds:
 
         data_round = dataset_id[-2:]  # extract the 'R#' substring from the provided ID
@@ -123,6 +156,21 @@ def read_dataset(input_dir, dataset_id, split, seed):
         #
         # print('Dataframe for {} - {}'.format(dataset_id, split), flush=True)
 
+    # compile all ANLI rounds
+    elif dataset_id == 'ANLI':
+
+        dataset_list = []
+        for data_round in anli_rounds:
+            data_round = data_round[-2:]
+            data_path = '{}/anli_v1.0/{}/{}.jsonl'.format(input_dir, data_round, split)
+            dataset = pd.read_json(data_path, lines=True)
+            dataset = dataset[['context', 'hypothesis', 'label', 'uid']]  # get rid of unnecessary columns
+            dataset['label'] = dataset['label'].apply(replace_labels)  # ensures consistently named labels
+            dataset['dataset'] = 'ANLI'
+            dataset_list.append(dataset)
+        dataset = pd.concat(dataset_list, axis=0)
+
+    # Load MNLI
     elif dataset_id == 'MNLI':
 
         if split == 'train':
@@ -146,6 +194,30 @@ def read_dataset(input_dir, dataset_id, split, seed):
                                      random_state=42)
             dataset = dataset[int((len(dataset)/2)):]
 
+    # Load WANLI
+    elif dataset_id == 'WANLI':
+
+        if split == 'train':
+            data_path = '{}/wanli/train.jsonl'.format(input_dir)
+        elif split == 'dev' or split == 'test':
+            data_path = '{}/wanli/test.jsonl'.format(input_dir)
+
+        dataset = pd.read_json(data_path, lines=True)
+        dataset = dataset[['premise', 'hypothesis', 'gold', 'pairID']]
+        dataset['dataset'] = 'WANLI'
+        dataset = dataset.drop(dataset[dataset.gold.str.contains('-')].index)
+
+        # split dev into dev and test set
+        if split == 'dev':
+            dataset = dataset.sample(frac=1,  # reshuffle all rows in the dataframe prior to split
+                                     random_state=42)  # seed is fixed such that dev and test set are always the same
+            dataset = dataset[:int((len(dataset) / 2))]
+
+        elif split == 'test':
+            dataset = dataset.sample(frac=1,
+                                     random_state=42)
+            dataset = dataset[int((len(dataset) / 2)):]
+
     else:
         raise KeyError('No dataset found for "{}"'.format(dataset_id))
 
@@ -159,12 +231,23 @@ def read_dataset(input_dir, dataset_id, split, seed):
     return dataset
 
 
-def combine_datasets(input_dir, datasets, split, downsample_rate, seed, undersample, perturb):
+def combine_datasets(input_dir,
+                     datasets,
+                     data_ratios,
+                     max_pool_size,
+                     split,
+                     downsample_rate,
+                     seed,
+                     undersample,
+                     perturb):
     """
     This function takes a list of NLI dataset names and
     concatenates all examples from each corresponding dataset
     for the provided data split (train/dev/test) into a single multi-dataset.
 
+    :param perturb:
+    :param max_pool_size:
+    :param data_ratios:
     :param undersample: flag to toggle under sampling w.r.t to minority dataset
     :param seed: random seed for reproducibility during sampling
     :param downsample_rate: value between 0 and 1, if we want to sample a subset of the data
@@ -177,7 +260,7 @@ def combine_datasets(input_dir, datasets, split, downsample_rate, seed, undersam
     def id2index(dataframe):
         # reset index and assign to ID column
         dataframe = dataframe.reset_index(drop=True)
-        dataframe.ID = dataframe.index
+        dataframe['indices'] = dataframe.index
         return dataframe
 
     # If we only consider a single dataset, we can just read and return it
@@ -200,14 +283,23 @@ def combine_datasets(input_dir, datasets, split, downsample_rate, seed, undersam
     # 4. combine individual datasets into single dataset
     combined_dataset = pd.concat(dataset_list, axis=0)
 
-    # 4.1 Optional: under-sample larger sub-datasets to match smallest sub-dataset
-    if undersample is True and len(datasets) > 1 and split == 'train':  # only applies to multi-data experiments
-        combined_dataset = undersample_to_smallest(df=combined_dataset,
-                                                   seed=seed)
+    # 4.1A for AL, under-sample larger sub-datasets to match smallest sub-dataset
+    if data_ratios is None or max_pool_size is None:
+        if undersample is True and len(datasets) > 1 and split == 'train':  # only applies to multi-data experiments
+            combined_dataset = undersample_to_smallest(df=combined_dataset,
+                                                       seed=seed)
 
-    # 4.2 Optional: down-sample training dataset:
-    if 0 < downsample_rate < 1 and split == 'train':
-        combined_dataset = combined_dataset.sample(frac=downsample_rate)
+        # Optional: down-sample training dataset:
+        if 0 < downsample_rate < 1 and split == 'train':
+            combined_dataset = combined_dataset.sample(frac=downsample_rate)
+
+    # 4.1B: for non-AL runs, we want to set a particular data ratio
+    if data_ratios is not None and max_pool_size is not None and split == 'train':
+        combined_dataset = apply_ratios(pool=combined_dataset,
+                                        dataset_ids=datasets,
+                                        data_ratios=data_ratios,
+                                        max_pool_size=max_pool_size,
+                                        seed=seed)
 
     # 4.3 Optional: add some perturbations to training set:
     if perturb is True and split == 'train':
@@ -217,6 +309,8 @@ def combine_datasets(input_dir, datasets, split, downsample_rate, seed, undersam
 
     # 5. replace str ID with index-based ID system
     combined_dataset = id2index(combined_dataset)
+
+    print(combined_dataset.columns)
 
     for dataset_id in combined_dataset['Dataset'].unique().tolist():
         sub_dataset = combined_dataset[combined_dataset['Dataset'] == dataset_id]
@@ -248,6 +342,8 @@ class DataPool(Dataset):
 
         self.input_dir = config.input_dir
         self.datasets = config.datasets
+        self.data_ratios = config.data_ratios
+        self.max_pool_size = config.max_pool_size
         self.seed_size = config.seed_size
         self.downsample_rate = config.downsample_rate
         self.max_length = config.max_length
@@ -257,12 +353,15 @@ class DataPool(Dataset):
         self.undersample = config.undersample
         self.perturb = config.perturb
         self.L = []
+        self.config = config
 
         if split == 'train':
 
             # first, we combine multiple NLI datasets into a single dataset and compile them in unlabeled pool U
             self.U = combine_datasets(input_dir=self.input_dir,
                                       datasets=self.datasets,
+                                      data_ratios=self.data_ratios,
+                                      max_pool_size=self.max_pool_size,
                                       split=split,
                                       downsample_rate=self.downsample_rate,
                                       seed=self.random_seed,
@@ -279,6 +378,8 @@ class DataPool(Dataset):
             # for dev and test we assume that all the data is labelled, so everything is passed to L
             self.L = combine_datasets(input_dir=self.input_dir,
                                       datasets=self.datasets,
+                                      data_ratios=None,
+                                      max_pool_size=None,
                                       split=split,
                                       downsample_rate=self.downsample_rate,
                                       seed=self.random_seed,
@@ -307,14 +408,15 @@ class DataPool(Dataset):
         if torch.is_tensor(idx):
             idx = idx.tolist()
 
-        premise, hypothesis, label, sample_id, dataset_id = self.data.iloc[idx]
+        # print(self.data.iloc[idx], flush=True)
+
+        premise, hypothesis, label, sample_id, dataset_id, sample_idx = self.data.iloc[idx]
 
         label = self.label2id[label]
 
         sample = {'premise': premise,
                   'hypothesis': hypothesis,
-                  'label': label,
-                  'id': sample_id}
+                  'label': label}
 
         return sample
 
@@ -358,6 +460,25 @@ class DataPool(Dataset):
 
         return k
 
+    def save_example_ids(self, new_examples, active_round):
+
+        df_copy = new_examples.copy()
+
+        # save IDs corresponding to indices in run-specific dir
+        parent_dir = self.config.output_dir + '/acquisition_IDs/' + self.config.project_dir + '/' + self.config.array_uid + '/' + self.config.model_id + '/' + self.config.acquisition_fn + '/' + str(self.config.seed)
+        filepath = parent_dir + '/acquisition_ids.csv'
+        df_copy['round'] = active_round  # add an identifier for the round we're currently in
+
+        if os.path.isfile(filepath):
+            print('Appending sample IDs to existing .csv', flush=True)
+            df_copy[['round', 'ID', 'Dataset', 'Label']].to_csv(filepath, mode='a', index=False, header=False)  # append to existing file
+        else:
+            print('Creating new dir to write .csv', flush=True)
+            Path(parent_dir).mkdir(parents=True, exist_ok=True)
+            df_copy[['round', 'ID', 'Dataset', 'Label']].to_csv(filepath, index=False)  # write to new file
+        return None
+
+
     def label_instances_randomly(self, k, dataset_ids):
         """
         This function randomly selects k examples from the unlabelled set U
@@ -378,17 +499,15 @@ class DataPool(Dataset):
         # initialize empty seed dataset L
         L = pd.DataFrame(columns=self.U.columns)
 
-        # # select k random instances from U for 'labelling' and move them to L
-        # random_indices = list(np.random.choice(a=len(self.U),
-        #                                        size=int(k),
-        #                                        replace=False))
-
         # From the unlabelled pool, consider all examples from the datasets that we want to use for the seed;
         # Then, sample k examples from this subset and use the original index values to extract them from U via .iloc
         # TODO check if correct
         random_indices = self.U[self.U.Dataset.isin(dataset_ids)].sample(k).index.values
-
         labelled_examples = self.U.iloc[random_indices]
+
+        # write example IDs corresponding to indices of current round to file
+        self.save_example_ids(new_examples=labelled_examples, active_round=0)
+
         L = L.append(labelled_examples).reset_index(drop=True)
         self.U = self.U.drop(labelled_examples.index).reset_index(drop=True)
         print(f"{'Total size unlabelled pool:':<30}{len(self.U):<32}")
@@ -396,50 +515,21 @@ class DataPool(Dataset):
 
         return L
 
-    def label_instances(self, indices):
+    def label_instances(self, indices, active_round):
         """
         This function takes an array of indices and transfers the corresponding examples from the unlabelled pool U
         to the labelled pool L
+        :param round: specifies which iteration of AL we're currently in
         :param indices: np array with indices of samples that we want to label based on some acquisition function
         :return:
         """
-
-        # TODO: can I come up with a nice mechanism for making sure that no mistakes are made when moving samples
-        # TODO: from the labeled to unlabeled sets?
-
-        # TODO: check that len(indices) = len(U). This should always be the case!
-        # TODO: if we load another dataset first, do we see that all AL methods favour that dataset instead?
-        #  Then there's clearly a bug in the labelling code
-        # TODO: print self.U and ensure that it actually contains examples from all datasets?
-        # TODO: I assume that the data enters the inference process unshuffled,
-        #  and exits the inference process unshuffled. but maybe this is not the case?
 
         if len(indices) > len(self.U):
             print('More indices gathered than remaining unlabelled examples. This should not happen!', flush=True)
             indices = indices[:len(self.U)]
 
-        # print('indice length:', flush=True)
-        # print(len(indices))
-        #
-        # print('first 10 indices', flush=True)
-        # print(indices[:10])
-        #
-        # print('last 10 indices', flush=True)
-        # print(indices[-10:])
-
-        # print('first 10 examples in self.U', flush=True)
-        # print(self.U.head(5))
-        #
-        # print('last 10 examples in self.U', flush=True)
-        # print(self.U.tail(5))
-
         new_examples = self.U.iloc[indices]  # Take examples from unlabelled pool
-
-        # print('first 5 examples of new examples', flush=True)
-        # print(new_examples.head(5))
-        #
-        # print('last 5 examples of new examples', flush=True)
-        # print(new_examples.tail(5))
+        self.save_example_ids(new_examples=new_examples, active_round=active_round)  # save IDS corresponding to indices for this round
 
         self.L = self.L.append(new_examples).reset_index(drop=True)  # Add them to the labelled pool
         self.U = self.U.drop(new_examples.index).reset_index(drop=True)  # Remove examples from unlabelled pool
@@ -457,13 +547,13 @@ class DataPool(Dataset):
         re-usable function for ensuring that U and L do not overlap
         """
         # assert that U and L are disjoint
-        unlabelled_indices = set(self.U.ID.tolist())
-        labelled_indices = set(self.L.ID.tolist())
+        unlabelled_indices = set(self.U.indices.tolist())
+        labelled_indices = set(self.L.indices.tolist())
         assert unlabelled_indices.isdisjoint(labelled_indices)
 
         # assert that both U and L have only unique indices
-        assert len(self.U) == len(set(self.U.ID.tolist()))
-        assert len(self.L) == len(set(self.L.ID.tolist()))
+        assert len(self.U) == len(set(self.U.indices.tolist()))
+        assert len(self.L) == len(set(self.L.indices.tolist()))
 
         # assert that both datasets still add up to original no. of examples
         assert len(self.U) + len(self.L) == self.total_size
@@ -498,10 +588,10 @@ class GenericDataModule(pl.LightningDataModule):
         premises = [sample['premise'] for sample in batch]
         hypotheses = [sample['hypothesis'] for sample in batch]
         labels = [sample['label'] for sample in batch]
-        ids = [sample['id'] for sample in batch]
+        # ids = [sample['id'] for sample in batch]
 
         labels = torch.tensor(labels)
-        ids = torch.tensor(ids)
+        # ids = torch.tensor(ids)
 
         # tokenize sentence and convert to sequence of ids
         tokenized_input_seq_pairs = self.tokenizer.__call__(text=premises,
@@ -523,8 +613,7 @@ class GenericDataModule(pl.LightningDataModule):
         padded_batch = {'input_ids': input_ids,
                         'token_type_ids': token_type_ids,
                         'attention_masks': attention_masks,
-                        'labels': labels,
-                        'ids': ids}
+                        'labels': labels}
 
         return padded_batch
 

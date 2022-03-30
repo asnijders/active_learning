@@ -1,11 +1,11 @@
 #!/bin/bash
 
-#SBATCH --partition=gpu_titanrtx_short
+#SBATCH --partition=gpu_titanrtx_shared
 #SBATCH --gres=gpu:1
 #SBATCH --job-name=test_run
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=3
-#SBATCH --time=00:10:00
+#SBATCH --time=00:15:00
 #SBATCH --mem=32000M
 #SBATCH --output=slurm/output_%A.out
 
@@ -33,14 +33,16 @@ srun python main.py \
             --output_dir "$TMPDIR/ard_output_dir_results" \
             --checkpoint_dir "$TMPDIR/ard_output_dir_checkpoints" \
             --project_dir="test" \
-            --array_uid="indexing-test" \
-            --model_id="bert-base-uncased" \
-            --datasets="MNLI,SNLI" \
-            --checkpoint_datasets="MNLI" \
-            --downsample_rate=0.01\
-            --seed_size=500 \
-            --labelling_batch_size=500 \
-            --al_iterations=1 \
+            --array_uid="combination_test" \
+            --model_id="roberta-large" \
+            --datasets="SNLI,MNLI,ANLI,WANLI" \
+            --checkpoint_datasets="SNLI" \
+            --data_ratios="1.0,0.0,0.0,0.0" \
+            --max_pool_size=3000\
+            --downsample_rate=1.0\
+            --seed_size=3000 \
+            --labelling_batch_size=0 \
+            --al_iterations=0 \
             --acquisition_fn="random" \
             --dropout=0.3 \
             --lr=2e-5 \
@@ -51,8 +53,7 @@ srun python main.py \
             --num_workers=3 \
             --precision=16 \
             --log_every=1 \
-            --progress_bar \
             --refresh_rate=25 \
-            --seed=41 \
+            --seed=42 \
 
 cp -r "$TMPDIR"/ard_output_dir_results $HOME/active_learning/results
