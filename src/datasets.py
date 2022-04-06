@@ -73,7 +73,6 @@ def undersample_to_smallest(df, seed):
     smallest_subdataset = df['Dataset'].value_counts().sort_values(ascending=True).index.tolist()[0]
     smallest_size = df['Dataset'].value_counts().sort_values(ascending=True).tolist()[0]
 
-
     subsets = []
     for key in df['Dataset'].unique():
         sub_dataset = df[df['Dataset'] == key]
@@ -126,7 +125,8 @@ def read_dataset(input_dir, dataset_id, split, seed):
     :param split: str indicating which split should be read
     :return: DataFrame with examples (Premise, Hypothesis, Label, ID)
     """
-    anli_rounds = ['ANLI_R1', 'ANLI_R2', 'ANLI_R3']
+    # anli_rounds = ['ANLI_R1', 'ANLI_R2', 'ANLI_R3']
+    anli_rounds = ['ANLI_R2', 'ANLI_R3']
 
     def replace_labels(label):
         label_conversions = {'e': 'entailment',
@@ -186,12 +186,12 @@ def read_dataset(input_dir, dataset_id, split, seed):
         # split dev into dev and test set
         if split == 'dev':
             dataset = dataset.sample(frac=1,  # reshuffle all rows in the dataframe prior to split
-                                     random_state=42)  # seed is fixed such that dev and test set are always the same
+                                     random_state=seed)  # seed is fixed such that dev and test set are always the same
             dataset = dataset[:int((len(dataset)/2))]
 
         elif split == 'test':
             dataset = dataset.sample(frac=1,
-                                     random_state=42)
+                                     random_state=seed)
             dataset = dataset[int((len(dataset)/2)):]
 
     # Load WANLI
@@ -210,12 +210,12 @@ def read_dataset(input_dir, dataset_id, split, seed):
         # split dev into dev and test set
         if split == 'dev':
             dataset = dataset.sample(frac=1,  # reshuffle all rows in the dataframe prior to split
-                                     random_state=42)  # seed is fixed such that dev and test set are always the same
+                                     random_state=seed)  # seed is fixed such that dev and test set are always the same
             dataset = dataset[:int((len(dataset) / 2))]
 
         elif split == 'test':
             dataset = dataset.sample(frac=1,
-                                     random_state=42)
+                                     random_state=seed)
             dataset = dataset[int((len(dataset) / 2)):]
 
     else:
@@ -233,6 +233,8 @@ def read_dataset(input_dir, dataset_id, split, seed):
 
 def combine_datasets(input_dir,
                      datasets,
+                     exclude_from_training,
+                     checkpoint_datasets,
                      data_ratios,
                      max_pool_size,
                      split,
@@ -245,6 +247,8 @@ def combine_datasets(input_dir,
     concatenates all examples from each corresponding dataset
     for the provided data split (train/dev/test) into a single multi-dataset.
 
+    :param exclude_from_training: any dataset in this list will be excluded when constructing the unlabelled train set
+    :param checkpoint_datasets: any dataset in this list will be used for checkpointing. if None, dev sets are undersampled
     :param perturb:
     :param max_pool_size:
     :param data_ratios:
@@ -263,22 +267,22 @@ def combine_datasets(input_dir,
         dataframe['indices'] = dataframe.index
         return dataframe
 
-    # If we only consider a single dataset, we can just read and return it
-    # if len(datasets) == 1:
-    #     dataset = read_dataset(input_dir, datasets[0], split, seed)
-    #     dataset = id2index(dataset)
-    #     return dataset
-
     # If we consider multiple datasets we have to combine them into a single dataset
     # 1. create empty dataframe to store examples from all datasets
     dataset_list = []
 
     # 2. load individual datasets and append to list
     for dataset_id in datasets:
-        dataset = read_dataset(input_dir, dataset_id, split, seed)
 
-        # 3. add dataset to multi-dataset
-        dataset_list.append(dataset)
+        if split != 'test' and dataset_id in exclude_from_training:
+            print('Excluding {} from {}!'.format(dataset_id, split), flush=True)
+            pass
+
+        else:
+            dataset = read_dataset(input_dir, dataset_id, split, seed)
+
+            # 3. add dataset to multi-dataset
+            dataset_list.append(dataset)
 
     # 4. combine individual datasets into single dataset
     combined_dataset = pd.concat(dataset_list, axis=0)
@@ -286,6 +290,12 @@ def combine_datasets(input_dir,
     # 4.1A for AL, under-sample larger sub-datasets to match smallest sub-dataset
     if data_ratios is None or max_pool_size is None:
         if undersample is True and len(datasets) > 1 and split == 'train':  # only applies to multi-data experiments
+            combined_dataset = undersample_to_smallest(df=combined_dataset,
+                                                       seed=seed)
+
+        if undersample is True and len(datasets) > 1 and split == 'dev' and checkpoint_datasets is None:
+            print('No checkpoint dataset provided. Undersampling dev sets {} to uniform mix!'.format(set(datasets) - set(exclude_from_training)),
+                  flush=True)
             combined_dataset = undersample_to_smallest(df=combined_dataset,
                                                        seed=seed)
 
@@ -301,7 +311,7 @@ def combine_datasets(input_dir,
                                         max_pool_size=max_pool_size,
                                         seed=seed)
 
-    # 4.3 Optional: add some perturbations to training set:
+    # 4.2 Optional: add some perturbations to training set:
     if perturb is True and split == 'train':
         combined_dataset = perturb_training_examples(dataset=combined_dataset,
                                                      fraction=0.5,
@@ -309,8 +319,6 @@ def combine_datasets(input_dir,
 
     # 5. replace str ID with index-based ID system
     combined_dataset = id2index(combined_dataset)
-
-    print(combined_dataset.columns)
 
     for dataset_id in combined_dataset['Dataset'].unique().tolist():
         sub_dataset = combined_dataset[combined_dataset['Dataset'] == dataset_id]
@@ -360,6 +368,8 @@ class DataPool(Dataset):
             # first, we combine multiple NLI datasets into a single dataset and compile them in unlabeled pool U
             self.U = combine_datasets(input_dir=self.input_dir,
                                       datasets=self.datasets,
+                                      exclude_from_training=config.exclude_training,
+                                      checkpoint_datasets=config.checkpoint_datasets,
                                       data_ratios=self.data_ratios,
                                       max_pool_size=self.max_pool_size,
                                       split=split,
@@ -378,6 +388,8 @@ class DataPool(Dataset):
             # for dev and test we assume that all the data is labelled, so everything is passed to L
             self.L = combine_datasets(input_dir=self.input_dir,
                                       datasets=self.datasets,
+                                      exclude_from_training=config.exclude_training,
+                                      checkpoint_datasets=config.checkpoint_datasets,
                                       data_ratios=None,
                                       max_pool_size=None,
                                       split=split,
@@ -493,7 +505,7 @@ class DataPool(Dataset):
         k = self.set_k(k)  # check if provided k is a percentage or an integer
         self.U = self.U.reset_index(drop=True)
 
-        print('Drawing {} random samples from {} from unlabelled set U for labelled seed set L'.format(k, dataset_ids),
+        print('Drawing {} random samples from {} from unlabelled set U for labelled seed set L'.format(k, self.U['Dataset'].unique()),
               flush=True)
 
         # initialize empty seed dataset L
@@ -502,7 +514,7 @@ class DataPool(Dataset):
         # From the unlabelled pool, consider all examples from the datasets that we want to use for the seed;
         # Then, sample k examples from this subset and use the original index values to extract them from U via .iloc
         # TODO check if correct
-        random_indices = self.U[self.U.Dataset.isin(dataset_ids)].sample(k).index.values
+        random_indices = self.U[self.U.Dataset.isin(dataset_ids)].sample(k, random_state=self.random_seed).index.values
         labelled_examples = self.U.iloc[random_indices]
 
         # write example IDs corresponding to indices of current round to file
@@ -619,18 +631,23 @@ class GenericDataModule(pl.LightningDataModule):
 
     def setup(self, stage=None):
 
+
+
         if stage == 'fit':
 
             print('\nBuilding train pool..', flush=True)
             if self.train is None:
+                # self.config.seed = 38
                 self.train = DataPool(config=self.config,
-                                      split='train', )
+                                      split='train')
 
             print('\nBuilding dev and test sets..', flush=True)
             if self.val is None:
+                # self.config.seed = 39
                 self.val = DataPool(config=self.config,
                                     split='dev')
             if self.test is None:
+                # self.config.seed = 39
                 self.test = DataPool(config=self.config,
                                      split='test')
 
@@ -735,5 +752,6 @@ class GenericDataModule(pl.LightningDataModule):
 
     def dump_csv(self):
 
-        self.train.U.to_csv(path_or_buf='{}/perturbed_U_pool.csv'.format(self.config.output_dir))
+        self.train.U.to_csv(path_or_buf='{}/U_pool.csv'.format(self.config.output_dir))
+        self.train.L.to_csv(path_or_buf='{}/L_pool.csv'.format(self.config.output_dir))
         return None

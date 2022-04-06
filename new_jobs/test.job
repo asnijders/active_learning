@@ -33,26 +33,28 @@ srun python main.py \
             --output_dir "$TMPDIR/ard_output_dir_results" \
             --checkpoint_dir "$TMPDIR/ard_output_dir_checkpoints" \
             --project_dir="test" \
-            --array_uid="indexing-test" \
-            --model_id="bert-base-uncased" \
-            --datasets="MNLI,SNLI" \
-            --checkpoint_datasets="MNLI" \
-            --downsample_rate=0.01\
-            --seed_size=500 \
-            --labelling_batch_size=500 \
-            --al_iterations=1 \
+            --array_uid="OOD non al test" \
+            --model_id="roberta-large" \
+            --datasets="SNLI,ANLI,WANLI,MNLI" \
+            --data_ratios="0.0,0.25,0.75,0" \
+            --exclude_training="MNLI,SNLI" \
+            --max_pool_size=4000\
+            --seed_size=4000 \
+            --downsample_rate=1.0\
+            --labelling_batch_size=0 \
+            --al_iterations=0 \
             --acquisition_fn="random" \
             --dropout=0.3 \
             --lr=2e-5 \
             --batch_size=32 \
-            --max_epochs=4 \
-            --patience=3 \
-            --monitor="val_loss" \
+            --max_epochs=5 \
+            --patience=8 \
+            --monitor="val_acc" \
             --num_workers=3 \
             --precision=16 \
             --log_every=1 \
             --progress_bar \
             --refresh_rate=25 \
-            --seed=41 \
+            --seed=43 \
 
 cp -r "$TMPDIR"/ard_output_dir_results $HOME/active_learning/results

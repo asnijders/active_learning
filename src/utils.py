@@ -102,7 +102,7 @@ def get_trainer(config, logger, batch_size=None, gpus=None):
 
     else:
         callbacks = None
-        epochs = 1
+        epochs = 20
         val_check_interval = 1
 
     if gpus is None:
@@ -115,6 +115,7 @@ def get_trainer(config, logger, batch_size=None, gpus=None):
                       log_every_n_steps=config.log_every,
                       accelerator=config.accelerator,
                       max_epochs=epochs,
+                      min_epochs=2,
                       deterministic=True,
                       enable_checkpointing=True,
                       enable_model_summary=False,
@@ -146,7 +147,7 @@ def train_model(dm, config, model, logger, trainer):
 
     # one can either checkpoint based on single, or multiple-dataset dev performance
     if config.checkpoint_datasets is None:
-        print('\nCheckpointing model weights based on aggregate dev performance on: {}'.format(config.datasets))
+        print('\nCheckpointing model weights based on aggregate dev performance on: {}'.format(dm.val.L['Dataset'].unique()))
         checkpoint_loader = dm.val_dataloader()
 
     else:
@@ -161,7 +162,7 @@ def train_model(dm, config, model, logger, trainer):
                 train_dataloaders=labelled_loader,
                 val_dataloaders=checkpoint_loader)
 
-    # return model checkpoint with best dev accuracy
+    # return model checkpoint with lowest dev loss
     if config.debug is False:
         print('\nLoading checkpoint: {}'.format(trainer.checkpoint_callback.best_model_path))
         model = TransformerModel.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
@@ -187,9 +188,9 @@ def evaluate_model(dm, config, model, trainer, logger, split):
         if config.separate_test_sets is True:
             print('Evaluating best model on separate {} sets'.format(split), flush=True)
             test_loaders = dm.get_separate_loaders(split=split,
-                                                   dataset_ids=config.datasets)
+                                                   dataset_ids=dm.test.L['Dataset'].unique())
 
-            for test_loader, dataset_id in zip(test_loaders, config.datasets):
+            for test_loader, dataset_id in zip(test_loaders, dm.test.L['Dataset'].unique()):
 
 
                 model.test_set_id = dataset_id + '_'
@@ -219,15 +220,16 @@ def evaluate_model(dm, config, model, trainer, logger, split):
         if config.separate_eval_sets is True:
             print('Evaluating best model on separate {} sets'.format(split), flush=True)
             dev_loaders = dm.get_separate_loaders(split=split,
-                                                  dataset_ids=config.datasets)
+                                                  dataset_ids=dm.val.L['Dataset'].unique())
 
-            for dev_loader, dataset_id in zip(dev_loaders, config.datasets):
+            for dev_loader, dataset_id in zip(dev_loaders, dm.val.L['Dataset'].unique()):
 
-                # TODO add a flag here to disable multi-dev-set evaluation for non-AL runs
-                if config.data_ratios is not None: # only applies if we're not doing AL
-                    if dataset_id != config.checkpoint_datasets[0]:
-                        print('Validation Warning: non-AL run - skipping evaluation on {} to save compute'.format(dataset_id), flush=True)
-                        continue
+                # # TODO add a flag here to disable multi-dev-set evaluation for non-AL runs
+                # if config.data_ratios is not None: # if this is true, we're doin a non-AL run.
+                #
+                #     if dataset_id != config.checkpoint_datasets[0]:
+                #         print('Validation Warning: non-AL run - skipping evaluation on {} to save compute'.format(dataset_id), flush=True)
+                #         continue
 
                 model.dev_set_id = dataset_id + '_'
                 model.init_metrics()

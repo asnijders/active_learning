@@ -156,6 +156,8 @@ def main(args):
     trainer = get_trainer(config=config,
                           logger=logger)
 
+    dm.dump_csv()
+
     # train model
     model, dm, logger, trainer = train_model(dm=dm,
                                              config=config,
@@ -204,6 +206,25 @@ if __name__ == '__main__':
                         help='str to specify what nli datasets should be loaded'
                              'please separate datasets with a "," e.g.'
                              '--datasets="MNLI,SNLI,ANLI"')
+
+    parser.add_argument('--train_sets', default='MNLI', type=str,
+                        help='str to specify what nli datasets should be loaded for training')
+
+    parser.add_argument('--dev_sets', default='MNLI', type=str,
+                        help='str to specify what nli datasets should be loaded for validation')
+
+    parser.add_argument('--test_sets', default='MNLI', type=str,
+                        help='str to specify what nli datasets should be loaded for testing')
+
+    parser.add_argument('--checkpoint_datasets', default=None, type=str,
+                        help='specify what dataset(s) should be used for dev-based checkpointing'
+                             'multiple datasets: use aggregate of dev performances for checkpointing (not implemented)'
+                             'single dataset: only use a single dataset for dev-based checkpointing'
+                             'None -> model selection based on aggregate uniform dev performance of all train sources')
+
+    parser.add_argument('--exclude_training', default=None, type=str,
+                        help='specify which datasets should be excluded from training (for out-of-domain testing)')
+
     parser.add_argument('--data_ratios', default=None, type=str,
                         help='str to specify in what ratios each dataset should be downsampled'
                              'e.g. for datasets=MNLI,ANLI,WANLI, an argument for ratios is 0.2,0.4,0.4')
@@ -223,11 +244,6 @@ if __name__ == '__main__':
                         help='str to specify which datasets should be used for initial seed'
                              'please separate datasets with a "," e.g.'
                              '--datasets="MNLI,SNLI,ANLI"')
-
-    parser.add_argument('--checkpoint_datasets', default=None, type=str,
-                        help='specify what dataset(s) should be used for dev-based checkpointing'
-                        'multiple datasets: use aggregate of dev performances for checkpointing (not yet implemented)' 
-                        'single dataset: only use a single dataset for dev-based checkpointing')
 
     parser.add_argument('--separate_test_sets', default=True, type=bool,
                         help='toggle between testing on:'
@@ -313,6 +329,7 @@ if __name__ == '__main__':
 
     # convert CLI str-based dataset args to lists
     config.datasets = config.datasets.upper().replace(' ', '').split(',')
+    config.exclude_training = config.exclude_training.upper().replace(' ', '').split(',')
 
     # if no explicit seed dataset argument is given we assume uniform random sampling from entire pool of datasets
     if config.seed_datasets is None:
