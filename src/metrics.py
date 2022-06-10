@@ -184,7 +184,7 @@ class Metrics:
         self.dm.train.label_instances(unlabelled_indices)
 
         # train model on labelled set
-        model = self._train_model()
+        model = self._train_model(
 
         predictions = self.run_inference(model=model,
                                          dataloader=self.dm.labelled_dataloader(shuffle=False),
