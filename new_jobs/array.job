@@ -5,10 +5,10 @@
 #SBATCH --job-name=array_run
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=3
-#SBATCH --time=18:00:00
+#SBATCH --time=01:00:00
 #SBATCH --mem=32000M
 #SBATCH --output=slurm/output_%A.out
-#SBATCH --array=1-25%8
+#SBATCH --array=1-75%75
 
 module purge
 module load 2021
@@ -28,7 +28,7 @@ cd $HOME/active_learning
 # Activate your environment
 source activate active
 
-HPARAMS_FILE=$HOME/active_learning/new_jobs/hparams/array_job_hyperparameters.txt
+HPARAMS_FILE=$HOME/active_learning/new_jobs/hparams/unique_perm_hyperparams.txt
 
 # Run your code
 srun python main.py \
@@ -36,23 +36,26 @@ srun python main.py \
             --output_dir "$TMPDIR/ard_output_dir_results" \
             --checkpoint_dir "$TMPDIR/ard_output_dir_checkpoints" \
             --project_dir="array" \
-            --array_uid="experiment_0602" \
-            --model_id="bert-base-uncased" \
-            --datasets="ANLI_R1, ANLI_R2, ANLI_R3, SNLI, MNLI" \
-            --checkpoint_datasets="MNLI" \
-            --downsample_rate=1.0 \
-            --seed_size=0.02 \
-            --labelling_batch_size=0.02 \
-            --al_iterations=24 \
+            --array_uid="unique combinations attempt 8 betere checkpoints" \
+            --model_id="roberta-large" \
+            --max_train_size=4000\
+            --max_dev_size=2200\
+            --seed_size=4000 \
+            --downsample_rate=1.0\
+            --labelling_batch_size=0 \
+            --al_iterations=0 \
+            --acquisition_fn="random" \
             --dropout=0.3 \
-            --lr=2e-5 \
-            --batch_size=32 \
-            --max_epochs=4 \
-            --patience=1 \
-            --monitor="val_loss" \
-            --num_workers=3 \
+            --lr=1e-5 \
+            --batch_size=8 \
+            --accumulate_grad_batches=8 \
+            --max_epochs=10 \
+            --min_epochs=10 \
+            --patience=10 \
+            --monitor="val_acc" \
+            --num_workers=0 \
             --precision=16 \
-            --log_every=2 \
+            --log_every=1 \
             --progress_bar \
             --refresh_rate=25 \
             $(head -$SLURM_ARRAY_TASK_ID $HPARAMS_FILE | tail -1)

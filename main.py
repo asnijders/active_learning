@@ -20,9 +20,10 @@ from pytorch_lightning.strategies import DDPStrategy
 from src.models import TransformerModel
 from src.datasets import GenericDataModule
 from src.strategies import select_acquisition_fn
-from src.utils import log_percentages, get_trainer, del_checkpoint, get_model, evaluate_model, train_model, create_project_filepath
+from src.utils import log_percentages, get_trainer, del_checkpoint, get_model, evaluate_model, train_model, evaluation_check, set_val_check_interval
+from src.metrics import Metrics
 
-logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
+# logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
 logging.getLogger("transformers").setLevel(logging.WARNING)
 warnings.filterwarnings("ignore", ".*does not have many workers.*")
 warnings.filterwarnings("ignore", "Some weights of the model checkpoint")
@@ -40,7 +41,6 @@ def main(args):
     wandb.config.update(args)
 
     # initialise PL logging
-    # project_filepath = create_project_filepath(config)
     logger = WandbLogger(project="active_learning",
                          save_dir=config.output_dir,
                          log_model=False)
@@ -52,14 +52,24 @@ def main(args):
         print(str(arg) + ': ' + str(getattr(args, arg)))
 
     # Set global seed
-    seed_everything(config.seed, workers=True)
-    if config.debug:  # This mode turns on more detailed torch error descriptions
-        torch.autograd.set_detect_anomaly(True)
+    fixed_seed = config.seed
+    seed_everything(fixed_seed, workers=True)
+    # if config.debug:  # This mode turns on more detailed torch error descriptions
+    # torch.autograd.set_detect_anomaly(True)
 
     if config.toy_run != 1.0:
         print('\nNOTE: TOY RUN - ONLY USING {}% OF DATA\n'.format(config.toy_run*100), flush=True)
     if config.downsample_rate != 1.0:
         print('\nNOTE: DOWN-SAMPLING - ONLY CONSIDERING {}% OF DATA\n'.format(config.downsample_rate * 100), flush=True)
+
+    # Metric computation if specified
+    metrics = None
+    if config.metrics:
+        metrics = Metrics(config=config,
+                          train_logger=logger,
+                          metric_logger=wandb)
+        metrics.compute_all_metrics()
+        sys.exit()
 
     # --------------------------------------- Active learning: Seed phase ---------------------------------------------
     # Build datamodule
@@ -74,18 +84,26 @@ def main(args):
                     epoch=None)
 
     # --------------------------------------- Pool-based active learning ---------------------------------------------
+    all_results = []
+
     if config.al_iterations > 0:
         print('\nStarting Active Learning process with strategy: {}'.format(config.acquisition_fn))
     else:
         print('\nSkipping Active Learning loop - will only train/val/test using labeled set')
     config.labelling_batch_size = dm.train.set_k(config.labelling_batch_size)
-    for i in range(config.al_iterations):
 
-        print('Active Learning iteration: {}\n'.format(i+1), flush=True)
+    counter = 0
+    while counter < config.al_iterations:
 
+        config.val_check_interval = set_val_check_interval(current_iter=counter,
+                                                           total_iters=config.al_iterations)
+
+        print('current val_check_interval = every {} epochs'.format(config.val_check_interval), flush=True)
+
+        print('Active Learning iteration: {}\n'.format(counter+1), flush=True)
         # ---------------------------------- Training model on current labelled dataset ------------------------------
         # initialise model
-        model = get_model(config)
+        model = get_model(config, train_loader=dm.labelled_dataloader())
 
         # initialise trainer
         trainer = get_trainer(config=config,
@@ -98,6 +116,26 @@ def main(args):
                                                  logger=logger,
                                                  trainer=trainer)
 
+        # check whether model ran successfully
+        failure, validation_score = evaluation_check(dm=dm,
+                                                     config=config,
+                                                     model=model,
+                                                     trainer=trainer,
+                                                     current_results=all_results)
+
+        if failure:
+            print('Model failed to learn. Restarting training for this AL iteration with a different seed..', flush=True)
+            del_checkpoint(trainer.checkpoint_callback.best_model_path)
+            del model
+            del trainer
+            gc.collect()
+            # seed_everything(config.seed+10, workers=True)
+            continue
+
+        else:
+            print('Model evaluation check passed!', flush=True)
+            all_results.append(validation_score)
+
         # ---------------------------------------------  Evaluating model  -------------------------------------------
         # evaluate best checkpoint on dev set
         evaluate_model(split='dev',
@@ -106,6 +144,7 @@ def main(args):
                        model=model,
                        trainer=trainer,
                        logger=wandb)
+
 
         # ------------------------------------ Acquiring new instances for labeling ----------------------------------
         # Exit AL loop if all data was already labelled
@@ -126,11 +165,11 @@ def main(args):
                         new_indices=to_be_labelled,
                         logger=wandb,
                         dm=dm,
-                        epoch=i)
+                        epoch=counter)
 
         # label new instances
         dm.train.label_instances(indices=to_be_labelled,
-                                 active_round=i+1)
+                                 active_round=counter+1)
 
         # log composition of updated labelled pool
         log_percentages(mode='makeup',
@@ -139,7 +178,10 @@ def main(args):
                         dm=dm,
                         epoch=None)
 
+        counter += 1
+
         # delete now-redundant checkpoint
+        # print('WARNING - NOT DELETING CHECKPOINTS',flush=True)
         del_checkpoint(trainer.checkpoint_callback.best_model_path)
 
         # some extra precautions to prevent memory leaks
@@ -149,21 +191,46 @@ def main(args):
         gc.collect()
 
     # --------------------------------------------- Testing final model --------------------------------------------- #
-    # initialise final model
-    model = get_model(config)
-
-    # initialise trainer
-    trainer = get_trainer(config=config,
-                          logger=logger)
-
     dm.dump_csv()
 
-    # train model
-    model, dm, logger, trainer = train_model(dm=dm,
-                                             config=config,
-                                             model=model,
-                                             logger=logger,
-                                             trainer=trainer)
+    # train model, perform model check
+    done = False
+    while done is False:
+
+        # initialise final model
+        model = get_model(config, train_loader=dm.labelled_dataloader())
+
+        # initialise trainer
+        trainer = get_trainer(config=config,
+                              logger=logger)
+
+        # train model
+        model, dm, logger, trainer = train_model(dm=dm,
+                                                 config=config,
+                                                 model=model,
+                                                 logger=logger,
+                                                 trainer=trainer)
+
+        # check whether training went OK
+        failure, validation_score = evaluation_check(dm=dm,
+                                                     config=config,
+                                                     model=model,
+                                                     trainer=trainer,
+                                                     current_results=all_results)
+
+        if failure:
+            print('Model failed to learn. Restarting training for testing',
+                  flush=True)
+            del_checkpoint(trainer.checkpoint_callback.best_model_path)
+            del model
+            del trainer
+            gc.collect()
+            continue
+
+        else:
+            print('Model evaluation check passed!', flush=True)
+            all_results.append(validation_score)
+            done = True
 
     # evaluate on dev set(s)
     evaluate_model(split='dev',
@@ -180,6 +247,8 @@ def main(args):
                    model=model,
                    trainer=trainer,
                    logger=wandb)
+
+    print('Finished experiment.', flush=True)
 
 
 if __name__ == '__main__':
@@ -202,7 +271,7 @@ if __name__ == '__main__':
     parser.add_argument('--seed', default=42, type=int,
                         help='specifies global seed')
 
-    parser.add_argument('--datasets', default='MNLI', type=str,
+    parser.add_argument('--datasets', default=None, type=str,
                         help='str to specify what nli datasets should be loaded'
                              'please separate datasets with a "," e.g.'
                              '--datasets="MNLI,SNLI,ANLI"')
@@ -212,6 +281,9 @@ if __name__ == '__main__':
 
     parser.add_argument('--dev_sets', default='MNLI', type=str,
                         help='str to specify what nli datasets should be loaded for validation')
+
+    parser.add_argument('--ood_sets', default=None, type=str,
+                        help='str to specify what OOD nli datasets should be loaded for validation')
 
     parser.add_argument('--test_sets', default='MNLI', type=str,
                         help='str to specify what nli datasets should be loaded for testing')
@@ -229,8 +301,12 @@ if __name__ == '__main__':
                         help='str to specify in what ratios each dataset should be downsampled'
                              'e.g. for datasets=MNLI,ANLI,WANLI, an argument for ratios is 0.2,0.4,0.4')
 
-    parser.add_argument('--max_pool_size', default=None, type=int,
+    parser.add_argument('--max_train_size', default=None, type=int,
                         help='specifies how many training examples should end up in pool')
+
+    #TODO implement this
+    parser.add_argument('--max_dev_size', default=None, type=int,
+                        help='specifies max dev examples per dataset')
 
     parser.add_argument('--undersample', action='store_false',
                         help='bool to specify whether majority training sets should be under sampled to'
@@ -280,11 +356,15 @@ if __name__ == '__main__':
     batch_size = 16 if device_count() > 0 else 4
     parser.add_argument('--batch_size', default=batch_size, type=int,
                         help='no. of sentences sampled per pass')
-    parser.add_argument('--max_epochs', default=10, type=int,
-                        help='no. of epochs to train for')
+    parser.add_argument('--accumulate_grad_batches', default=3, type=int,
+                        help='no of batches to accumulate before step')
+    parser.add_argument('--max_epochs', default=None, type=int,
+                        help='max no. of epochs to train for')
+    parser.add_argument('--min_epochs', default=None, type=int,
+                        help='min no. of epochs to train for')
     parser.add_argument('--patience', default=3, type=int,
                         help='patience for early stopping')
-    parser.add_argument('--val_check_interval', default=0.2, type=float,
+    parser.add_argument('--val_check_interval', default=0.5, type=float,
                         help='how often to evaluate and checkpoint')
     parser.add_argument('--monitor', default='val_loss', type=str,
                         help='quantity monitored by early stopping / checkpointing callbacks.'
@@ -316,11 +396,17 @@ if __name__ == '__main__':
     # Auxiliary args
     parser.add_argument('--debug', default=False, type=bool,
                         help='toggle elaborate torch errors')
+    parser.add_argument('--overfit_batches', default=0.0, type=float,
+                        help='prop of batches to overfit')
     parser.add_argument('--toy_run', default=1.00, type=float,
                         help='proportion of batches used in train/dev/test phase (useful for debugging)')
     parser.add_argument('--refresh_rate', default=250, type=int,
                         help='how often to refresh progress bar (in steps)')
     parser.add_argument('--progress_bar', action='store_false', help='toggle progress bar')
+
+    # Metrics args
+    parser.add_argument('--metrics', action='store_true', help='toggle metrics computation')
+    parser.add_argument('--metrics_uid', default=None, type=str, help='id for existing run folder')
 
     log_every = 50 if device_count() > 0 else 1
     parser.add_argument('--log_every', default=log_every, type=int,
@@ -328,14 +414,19 @@ if __name__ == '__main__':
     config = parser.parse_args()
 
     # convert CLI str-based dataset args to lists
-    config.datasets = config.datasets.upper().replace(' ', '').split(',')
-    config.exclude_training = config.exclude_training.upper().replace(' ', '').split(',')
+    # config.datasets = config.datasets.upper().replace(' ', '').split(',')
+    config.train_sets = config.train_sets.upper().replace(' ', '').split(',')
+    config.dev_sets = config.dev_sets.upper().replace(' ', '').split(',')
+    config.test_sets = config.test_sets.upper().replace(' ', '').split(',')
+
+    if config.ood_sets is not None:
+        config.ood_sets = config.ood_sets.upper().replace(' ', '').split()
 
     # if no explicit seed dataset argument is given we assume uniform random sampling from entire pool of datasets
-    if config.seed_datasets is None:
-        config.seed_datasets = config.datasets
-    else:
-        config.seed_datasets = config.seed_datasets.upper().replace(' ', '').split(',')
+    # if config.seed_datasets is None:
+    #     config.seed_datasets = [pair[0] for pair in config.train_sets.split('_')]
+    # else:
+    #     config.seed_datasets = config.seed_datasets.upper().replace(' ', '').split(',')
 
     # convert seed and batch sizes to integers if need be
     if config.seed_size > 1:
@@ -343,10 +434,10 @@ if __name__ == '__main__':
     if config.labelling_batch_size > 1:
         config.labelling_batch_size = int(config.labelling_batch_size)
 
-    # convert comma-separated data_ratios str to list of floats:
-    if config.data_ratios is not None:
-        config.data_ratios = config.data_ratios.split(',')
-        config.data_ratios = [float(substr) for substr in config.data_ratios]
+    # # convert comma-separated data_ratios str to list of floats:
+    # if config.data_ratios is not None:
+    #     config.data_ratios = config.data_ratios.split(',')
+    #     config.data_ratios = [float(substr) for substr in config.data_ratios]
 
     if config.checkpoint_datasets is not None:
         config.checkpoint_datasets = config.checkpoint_datasets.upper().replace(' ', '').split()

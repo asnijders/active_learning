@@ -3,11 +3,6 @@
 --seed 44 --acquisition_fn=random
 --seed 45 --acquisition_fn=random
 --seed 46 --acquisition_fn=random
---seed 42 --acquisition_fn=least-confidence
---seed 43 --acquisition_fn=least-confidence
---seed 44 --acquisition_fn=least-confidence
---seed 45 --acquisition_fn=least-confidence
---seed 46 --acquisition_fn=least-confidence
 --seed 42 --acquisition_fn=max-entropy
 --seed 43 --acquisition_fn=max-entropy
 --seed 44 --acquisition_fn=max-entropy
@@ -23,3 +18,8 @@
 --seed 44 --acquisition_fn=bald
 --seed 45 --acquisition_fn=bald
 --seed 46 --acquisition_fn=bald
+--seed 42 --acquisition_fn=dal
+--seed 43 --acquisition_fn=dal
+--seed 44 --acquisition_fn=dal
+--seed 45 --acquisition_fn=dal
+--seed 46 --acquisition_fn=dal

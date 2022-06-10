@@ -17,6 +17,7 @@ import copy
 import random
 from src.utils import get_trainer
 from pathlib import Path
+import requests
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -224,19 +225,16 @@ def read_dataset(input_dir, dataset_id, split, seed):
     # ensure consistent headers per dataset DataFrame
     dataset.columns = ['Premise', 'Hypothesis', 'Label', 'ID', 'Dataset']
 
-    # print('Single {} {} dataset label distribution: '.format(dataset_id, split), flush=True)
-    # percentages = dataset['Label'].value_counts(normalize=True).to_dict()
-    # print(percentages, flush=True)
-
     return dataset
 
 
 def combine_datasets(input_dir,
                      datasets,
-                     exclude_from_training,
                      checkpoint_datasets,
+                     dev_sets,
                      data_ratios,
                      max_pool_size,
+                     max_dev_size,
                      split,
                      downsample_rate,
                      seed,
@@ -272,44 +270,58 @@ def combine_datasets(input_dir,
     dataset_list = []
 
     # 2. load individual datasets and append to list
-    for dataset_id in datasets:
+    for i in range(len(datasets)):
 
-        if split != 'test' and dataset_id in exclude_from_training:
-            print('Excluding {} from {}!'.format(dataset_id, split), flush=True)
-            pass
+        dataset_id = datasets[i]
+        dataset = read_dataset(input_dir=input_dir,
+                               dataset_id=dataset_id,
+                               split=split,
+                               seed=seed)
 
-        else:
-            dataset = read_dataset(input_dir, dataset_id, split, seed)
+        if split == 'train' and data_ratios != None and max_pool_size != None:
 
-            # 3. add dataset to multi-dataset
-            dataset_list.append(dataset)
+            fraction = data_ratios[i]
+            sample_size = int(max_pool_size*fraction)
+            print('Subsampling {} to size {}'.format(dataset_id, sample_size))
+            dataset = dataset.sample(n=sample_size, random_state=seed)
+
+        if split == 'dev' and checkpoint_datasets is None and max_dev_size != None and dataset_id in dev_sets:
+            print('Running non AL experiment with chkpt based on aggregate dev performance.'
+                  '\nDev set has to be made up from even sub-datasets. ANLI has smallest dev set (N=2200). '
+                  '\nTherefore subsampling {} to size {}\n'.format(dataset_id, max_dev_size))
+            dataset = dataset.sample(n=max_dev_size, random_state=seed)
+
+        # 3. add dataset to multi-dataset
+        dataset_list.append(dataset)
 
     # 4. combine individual datasets into single dataset
     combined_dataset = pd.concat(dataset_list, axis=0)
 
     # 4.1A for AL, under-sample larger sub-datasets to match smallest sub-dataset
-    if data_ratios is None or max_pool_size is None:
+    if max_pool_size is None:
         if undersample is True and len(datasets) > 1 and split == 'train':  # only applies to multi-data experiments
             combined_dataset = undersample_to_smallest(df=combined_dataset,
                                                        seed=seed)
 
-        if undersample is True and len(datasets) > 1 and split == 'dev' and checkpoint_datasets is None:
-            print('No checkpoint dataset provided. Undersampling dev sets {} to uniform mix!'.format(set(datasets) - set(exclude_from_training)),
-                  flush=True)
-            combined_dataset = undersample_to_smallest(df=combined_dataset,
-                                                       seed=seed)
+        # # if we chkpt based on agg. dev perf., we have to ensure that the dev set consists of even components
+        # if undersample is True and len(datasets) > 1 and split == 'dev' and checkpoint_datasets is None:
+        #     print('No checkpoint dataset provided. Undersampling dev sets {} to uniform mix!'.format(set(datasets)),
+        #           flush=True)
+        #     combined_dataset = undersample_to_smallest(df=combined_dataset,
+        #                                                seed=seed)
+
 
         # Optional: down-sample training dataset:
         if 0 < downsample_rate < 1 and split == 'train':
             combined_dataset = combined_dataset.sample(frac=downsample_rate)
 
-    # 4.1B: for non-AL runs, we want to set a particular data ratio
-    if data_ratios is not None and max_pool_size is not None and split == 'train':
-        combined_dataset = apply_ratios(pool=combined_dataset,
-                                        dataset_ids=datasets,
-                                        data_ratios=data_ratios,
-                                        max_pool_size=max_pool_size,
-                                        seed=seed)
+    # # 4.1B: for non-AL runs, we want to set a particular data ratio
+    # if data_ratios is not None and max_pool_size is not None and split == 'train':
+    #     combined_dataset = apply_ratios(pool=combined_dataset,
+    #                                     dataset_ids=datasets,
+    #                                     data_ratios=data_ratios,
+    #                                     max_pool_size=max_pool_size,
+    #                                     seed=seed)
 
     # 4.2 Optional: add some perturbations to training set:
     if perturb is True and split == 'train':
@@ -326,10 +338,6 @@ def combine_datasets(input_dir,
 
     print(f"{'Total {} size:'.format(split):<30}{len(combined_dataset):<32}", '\n', flush=True)
 
-    # print('Combined {} dataset label distribution'.format(split), flush=True)
-    # percentages = combined_dataset['Label'].value_counts(normalize=True).to_dict()
-    # print(percentages, flush=True)
-
     return combined_dataset
 
 
@@ -338,7 +346,7 @@ class DataPool(Dataset):
     This class implements the Pytorch Lightning Dataset object for multiple NLI datasets
     """
 
-    def __init__(self, config, split):
+    def __init__(self, config, datasets, split, seed):
         """
         :param datasets: datasets: list with dataset names
         :param split: string indicating which split should be accessed
@@ -349,15 +357,16 @@ class DataPool(Dataset):
         # for the training split, we consider all examples as unlabelled and start training with a seed set L
 
         self.input_dir = config.input_dir
-        self.datasets = config.datasets
+        self.datasets = datasets
         self.data_ratios = config.data_ratios
-        self.max_pool_size = config.max_pool_size
+        self.max_pool_size = config.max_train_size
+        self.max_dev_size = config.max_dev_size
         self.seed_size = config.seed_size
         self.downsample_rate = config.downsample_rate
         self.max_length = config.max_length
         self.model_id = config.model_id
         self.seed_datasets = config.seed_datasets
-        self.random_seed = config.seed
+        self.random_seed = seed
         self.undersample = config.undersample
         self.perturb = config.perturb
         self.L = []
@@ -365,21 +374,32 @@ class DataPool(Dataset):
 
         if split == 'train':
 
+            data_ratios = []
+            train_sets = []
+            for dataset in datasets:
+                ratio = float(dataset.split('_')[1])
+                train_set = dataset.split('_')[0]
+                train_sets.append(train_set)
+                data_ratios.append(ratio)
+            datasets = train_sets
+
             # first, we combine multiple NLI datasets into a single dataset and compile them in unlabeled pool U
             self.U = combine_datasets(input_dir=self.input_dir,
-                                      datasets=self.datasets,
-                                      exclude_from_training=config.exclude_training,
+                                      datasets=datasets,
+                                      data_ratios=data_ratios,
                                       checkpoint_datasets=config.checkpoint_datasets,
-                                      data_ratios=self.data_ratios,
+                                      dev_sets=config.dev_sets,
                                       max_pool_size=self.max_pool_size,
+                                      max_dev_size=self.max_dev_size,
                                       split=split,
                                       downsample_rate=self.downsample_rate,
                                       seed=self.random_seed,
                                       undersample=self.undersample,
                                       perturb=self.perturb)
+
             # then, we label k samples randomly and put them in labeled pool L
             self.L = self.label_instances_randomly(k=self.seed_size,
-                                                   dataset_ids=self.seed_datasets)
+                                                   dataset_ids=self.datasets)
 
             self.total_size = len(self.U) + len(self.L)
 
@@ -388,10 +408,11 @@ class DataPool(Dataset):
             # for dev and test we assume that all the data is labelled, so everything is passed to L
             self.L = combine_datasets(input_dir=self.input_dir,
                                       datasets=self.datasets,
-                                      exclude_from_training=config.exclude_training,
                                       checkpoint_datasets=config.checkpoint_datasets,
+                                      dev_sets=config.dev_sets,
                                       data_ratios=None,
                                       max_pool_size=None,
+                                      max_dev_size=self.max_dev_size,
                                       split=split,
                                       downsample_rate=self.downsample_rate,
                                       seed=self.random_seed,
@@ -428,7 +449,9 @@ class DataPool(Dataset):
 
         sample = {'premise': premise,
                   'hypothesis': hypothesis,
-                  'label': label}
+                  'label': label,
+                  'sample_id': sample_id,
+                  'dataset_id': dataset_id}
 
         return sample
 
@@ -477,7 +500,7 @@ class DataPool(Dataset):
         df_copy = new_examples.copy()
 
         # save IDs corresponding to indices in run-specific dir
-        parent_dir = self.config.output_dir + '/acquisition_IDs/' + self.config.project_dir + '/' + self.config.array_uid + '/' + self.config.model_id + '/' + self.config.acquisition_fn + '/' + str(self.config.seed)
+        parent_dir = self.config.output_dir + '/acquisition_IDs/' + self.config.project_dir + '/' + self.config.array_uid.replace(' ','_') + '/' + self.config.model_id + '/' + self.config.acquisition_fn + '/' + str(self.config.seed)
         filepath = parent_dir + '/acquisition_ids.csv'
         df_copy['round'] = active_round  # add an identifier for the round we're currently in
 
@@ -489,7 +512,6 @@ class DataPool(Dataset):
             Path(parent_dir).mkdir(parents=True, exist_ok=True)
             df_copy[['round', 'ID', 'Dataset', 'Label']].to_csv(filepath, index=False)  # write to new file
         return None
-
 
     def label_instances_randomly(self, k, dataset_ids):
         """
@@ -514,7 +536,7 @@ class DataPool(Dataset):
         # From the unlabelled pool, consider all examples from the datasets that we want to use for the seed;
         # Then, sample k examples from this subset and use the original index values to extract them from U via .iloc
         # TODO check if correct
-        random_indices = self.U[self.U.Dataset.isin(dataset_ids)].sample(k, random_state=self.random_seed).index.values
+        random_indices = self.U.sample(k, random_state=self.random_seed).index.values
         labelled_examples = self.U.iloc[random_indices]
 
         # write example IDs corresponding to indices of current round to file
@@ -527,11 +549,12 @@ class DataPool(Dataset):
 
         return L
 
-    def label_instances(self, indices, active_round):
+    def label_instances(self, indices, active_round, save_ids=True):
         """
         This function takes an array of indices and transfers the corresponding examples from the unlabelled pool U
         to the labelled pool L
-        :param round: specifies which iteration of AL we're currently in
+        :param save_ids: toggle saving of acquired IDs. true by default, False should be passed when computing metrics
+        :param active_round: specifies which iteration of AL we're currently in
         :param indices: np array with indices of samples that we want to label based on some acquisition function
         :return:
         """
@@ -541,7 +564,8 @@ class DataPool(Dataset):
             indices = indices[:len(self.U)]
 
         new_examples = self.U.iloc[indices]  # Take examples from unlabelled pool
-        self.save_example_ids(new_examples=new_examples, active_round=active_round)  # save IDS corresponding to indices for this round
+        if save_ids:
+            self.save_example_ids(new_examples=new_examples, active_round=active_round)  # save IDS corresponding to indices for this round
 
         self.L = self.L.append(new_examples).reset_index(drop=True)  # Add them to the labelled pool
         self.U = self.U.drop(new_examples.index).reset_index(drop=True)  # Remove examples from unlabelled pool
@@ -571,6 +595,90 @@ class DataPool(Dataset):
         assert len(self.U) + len(self.L) == self.total_size
         return None
 
+    def load_past_indices(self, min_round, relative_dataset):
+        """
+        This function does the following:
+        1. loads the acquisitions_ID file corresponding to some experiment ID and a specific seed and acquisition fn
+        2. selects the acquired data from U using the IDs, returns the indices
+        :return:
+        """
+
+        # 1. load acquired data as dm
+        acquired_df = self.load_past_acquired_data()
+        acquired_df['round'] = acquired_df['round'].astype('int')
+        # 2. remove the rows for round 1 since those are already in L; for the remainder select only the IDs column
+        print('Loading all data between rounds {} and 14'.format(min_round), flush=True)
+        acquired_df_ids = acquired_df[(acquired_df['round'] >= min_round) & (acquired_df['round'] < 15)]['ID']
+
+        # convert ID dtype to str
+        acquired_df_ids = acquired_df_ids.astype('string').tolist()
+        relative_dataset.ID = relative_dataset.ID.astype('string')
+
+        print(len(relative_dataset), flush=True)
+        # for example in acquired_df_ids:
+        #     print(example, type(example), flush=True)
+        #
+        # for example in relative_dataset.ID.tolist():
+        #     print(example, type(example), flush=True)
+
+        # 3. use IDs to select data points from unlabelled set; then get the indices of those examples
+        indices = []
+        seen = []
+
+        for i, example in enumerate(relative_dataset.ID.tolist()):
+            if example in acquired_df_ids and example not in seen:
+                indices.append(i)
+            seen.append(example)
+
+        print('No of indices found: ', flush=True)
+        print(len(indices), flush=True)
+
+        # for sample_id in acquired_df_ids:
+        #
+        #     index = relative_dataset[relative_dataset.ID.str.contains(sample_id)].index
+        #     if len(index.values) > 0:
+        #         indices.append(index.values[0])
+        #     else:
+        #         print(sample_id, index.values, flush=True)
+        #
+        #     if sample_id not in seen:
+        #         seen.append(sample_id)
+        #     else:
+        #         print('Duplicate samples:')
+        #         print(sample_id, flush=True)
+
+        print('{} duplicates found in acquired data'.format(len(indices)-len(set(indices))), flush=True)
+        indices = list(set(indices))
+
+        return indices
+
+    def load_past_acquired_data(self):
+
+        # load acquired data
+        parent_dir = self.config.output_dir + '/acquisition_IDs/' + self.config.project_dir + '/' + self.config.metrics_uid.replace(
+            ' ', '_') + '/' + self.config.model_id + '/' + self.config.acquisition_fn + '/' + str(self.config.seed)
+        filepath = parent_dir + '/acquisition_ids.csv'
+
+        acquired_df = pd.read_csv(filepath)
+
+        return acquired_df
+
+
+def get_tokenizer(model_id):
+
+    done = False
+    while done is False:
+        try:
+
+            tokenizer = AutoTokenizer.from_pretrained(model_id)
+            done = True
+
+        except requests.exceptions.RequestException as exception:
+            print('Got internal server error. Trying to download tokenizer again in 10 seconds..', flush=True)
+            print(exception)
+            time.sleep(10)
+
+    return tokenizer
 
 class GenericDataModule(pl.LightningDataModule):
     """
@@ -581,7 +689,7 @@ class GenericDataModule(pl.LightningDataModule):
         super().__init__()
 
         self.config = config
-        self.tokenizer = AutoTokenizer.from_pretrained(config.model_id)
+        self.tokenizer = get_tokenizer(model_id=config.model_id)
         self.collator = DataCollatorWithPadding(tokenizer=self.tokenizer,
                                                 padding='longest',
                                                 max_length=config.max_length)
@@ -600,7 +708,8 @@ class GenericDataModule(pl.LightningDataModule):
         premises = [sample['premise'] for sample in batch]
         hypotheses = [sample['hypothesis'] for sample in batch]
         labels = [sample['label'] for sample in batch]
-        # ids = [sample['id'] for sample in batch]
+        ids = [sample['sample_id'] for sample in batch]
+        dataset_ids = [sample['dataset_id'] for sample in batch]
 
         labels = torch.tensor(labels)
         # ids = torch.tensor(ids)
@@ -625,31 +734,47 @@ class GenericDataModule(pl.LightningDataModule):
         padded_batch = {'input_ids': input_ids,
                         'token_type_ids': token_type_ids,
                         'attention_masks': attention_masks,
-                        'labels': labels}
+                        'labels': labels,
+                        'sample_ids': ids,
+                        'dataset_ids': dataset_ids}
 
         return padded_batch
 
     def setup(self, stage=None):
 
-
+        fixed_seed = self.config.seed
 
         if stage == 'fit':
 
             print('\nBuilding train pool..', flush=True)
             if self.train is None:
-                # self.config.seed = 38
+
                 self.train = DataPool(config=self.config,
-                                      split='train')
+                                      datasets=self.config.train_sets,
+                                      split='train',
+                                      seed=fixed_seed)
 
             print('\nBuilding dev and test sets..', flush=True)
             if self.val is None:
                 # self.config.seed = 39
                 self.val = DataPool(config=self.config,
-                                    split='dev')
+                                    datasets=self.config.dev_sets,
+                                    split='dev',
+                                    seed=fixed_seed)
+
+            if self.config.ood_sets is not None:
+                print('Building OOD dev set...', flush=True)
+                self.ood_val = DataPool(config=self.config,
+                                        datasets=self.config.ood_sets,
+                                        split='dev',
+                                        seed=fixed_seed)
+
             if self.test is None:
                 # self.config.seed = 39
                 self.test = DataPool(config=self.config,
-                                     split='test')
+                                     datasets=self.config.test_sets,
+                                     split='test',
+                                     seed=fixed_seed)
 
         if stage == 'test':
             pass
@@ -725,6 +850,8 @@ class GenericDataModule(pl.LightningDataModule):
             aggregate_datapool = self.val
         elif split == 'test':
             aggregate_datapool = self.test
+        elif split == 'ood':
+            aggregate_datapool = self.ood_val
         else:
             raise KeyError('Please specify for which split datasets should be separated')
 
@@ -752,6 +879,6 @@ class GenericDataModule(pl.LightningDataModule):
 
     def dump_csv(self):
 
-        self.train.U.to_csv(path_or_buf='{}/U_pool.csv'.format(self.config.output_dir))
-        self.train.L.to_csv(path_or_buf='{}/L_pool.csv'.format(self.config.output_dir))
+        self.train.U.to_csv(path_or_buf='{}/U_pool_seed_{}.csv'.format(self.config.output_dir, self.config.seed))
+        self.train.L.to_csv(path_or_buf='{}/L_pool_seed_{}.csv'.format(self.config.output_dir, self.config.seed))
         return None

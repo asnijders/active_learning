@@ -21,35 +21,35 @@ def get_MLP_trainer(config, logger):
     # Init early stopping
     early_stopping_callback = EarlyStopping(monitor="discriminative_train_acc_epoch",
                                             min_delta=0.000,
-                                            patience=40,
+                                            patience=0,
                                             verbose=True,
                                             mode=mode,
-                                            stopping_threshold=0.95)
+                                            stopping_threshold=0.90)
 
     # Init ModelCheckpoint callback, monitoring 'config.monitor'
-    run_dir = config.checkpoint_dir + '/' + config.acquisition_fn + '/' + str(config.seed) + '/'
+    run_dir = config.checkpoint_dir + '/' + config.array_uid.replace(' ','_') + '/' + config.acquisition_fn + '/' + str(config.seed) + '/'
     checkpoint_callback = ModelCheckpoint(monitor="discriminative_train_acc_epoch",
                                           mode=mode,
                                           save_top_k=1,
                                           dirpath=run_dir,
-                                          filename='discriminative-{epoch}-{step}-{discriminative_loss_epoch:.2f}-{discriminative_train_acc:.2f}',
+                                          filename='discriminative-{epoch}-{step}-{discriminative_loss_epoch:.2f}-{discriminative_train_acc_epoch:.2f}',
                                           verbose=True)
 
     callbacks = [early_stopping_callback, checkpoint_callback]
-    epochs = 40
+    epochs = 5
 
     trainer = Trainer(gpus=config.gpus,
                       strategy=config.strategy,
                       logger=logger,
                       callbacks=callbacks,
-                      log_every_n_steps=config.log_every,
+                      log_every_n_steps=1,#config.log_every,
                       accelerator=config.accelerator,
                       max_epochs=epochs,
                       deterministic=True,
                       enable_checkpointing=True,
                       enable_model_summary=False,
                       num_sanity_val_steps=0,
-                      progress_bar_refresh_rate=config.refresh_rate,
+                      progress_bar_refresh_rate=1,#config.refresh_rate,
                       enable_progress_bar=True,
                       precision=config.precision)
 
@@ -158,17 +158,15 @@ class DiscriminativeDataModule(pl.LightningDataModule):
 
 class DiscriminativeMLP(pl.LightningModule):
 
-    def __init__(self, batch_size=64):
+    def __init__(self, input_dim, batch_size=64):
         super().__init__()
 
+        self.input_dim = input_dim
+
         self.layers = nn.Sequential(
-            nn.Linear(768, 512),
+            nn.Linear(self.input_dim, 256),
             nn.ReLU(inplace=True),
-            nn.Linear(512, 256),
-            nn.ReLU(inplace=True),
-            nn.Linear(256, 128),
-            nn.ReLU(inplace=True),
-            nn.Linear(128, 2)
+            nn.Linear(256, 2)
         )
 
         self.ce = nn.CrossEntropyLoss()
@@ -176,7 +174,7 @@ class DiscriminativeMLP(pl.LightningModule):
         self.batch_size = batch_size
 
         # hparams
-        self.lr = 0.0001  # learning rate
+        self.lr = 0.0000001  # learning rate
         self.train_acc = torchmetrics.Accuracy()
 
     def configure_optimizers(self):

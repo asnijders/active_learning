@@ -178,8 +178,32 @@ class BALD(AcquisitionFunction):
                                        config=config,
                                        model=model)
 
+        # np.argsort returns indices from low to high
+        # [::-1] shuffles the examples -> now from high to low
+        # [:k] takes the k highest instances.
+        # in other words we take the k indices with the highest bald scores
         bald_indices = np.argsort(informations)[::-1][:k]
         return bald_indices
+
+
+class BALD_EPIG(AcquisitionFunction):
+    def __init__(self, logger=None):
+        super().__init__()
+
+    def acquire_instances(self, config, model, dm, k):
+
+        # LHS: acquire examples for BALD with model trained on training data
+
+        # RHS: acquire examples for BALD with model trained on training data and unlabeled dev data
+        # We do two things:
+        # 1. we take the original model p(w|D_train) and use it to gather preds for the dev set (teacher)
+        # 2. we train a new model with D_train and the predictions (student)
+        # 3. the student model is trained by minimizing the KL divergence between the softmax outputs
+        # of itself and the teacher model
+
+        pass
+
+
 
 
 class Coreset(AcquisitionFunction):
@@ -311,7 +335,12 @@ class DiscriminativeActiveLearner(AcquisitionFunction):
     def train_discriminator(self, config, logger, discriminative_dm):
 
         # init MLP discriminator model
-        model = DiscriminativeMLP(batch_size=64)
+        if config.model_id == 'bert-base-uncased':
+            input_dim = 768
+        elif config.model_id == 'roberta-large':
+            input_dim = 1024
+
+        model = DiscriminativeMLP(input_dim=input_dim)
 
         # init trainer obj
         trainer = get_MLP_trainer(config=config, logger=logger)
@@ -325,7 +354,7 @@ class DiscriminativeActiveLearner(AcquisitionFunction):
         # load model with best train accuracy
         print('\nLoading checkpoint for discriminator: {}'.format(trainer.checkpoint_callback.best_model_path),
               flush=True)
-        model = DiscriminativeMLP.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
+        model = DiscriminativeMLP.load_from_checkpoint(trainer.checkpoint_callback.best_model_path, input_dim=input_dim)
 
         return model, trainer
 
@@ -410,7 +439,7 @@ class DiscriminativeActiveLearner(AcquisitionFunction):
             labeled_so_far += len(sub_batch)
 
             # delete checkpoint for this sub-round
-            del_checkpoint(trainer.checkpoint_callback.best_model_path, verbose=False)
+            del_checkpoint(trainer.checkpoint_callback.best_model_path, verbose=True)
             del model
             del trainer
             gc.collect()

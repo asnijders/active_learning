@@ -13,11 +13,12 @@ import numpy as np
 # PyTorch modules
 import torch
 from torch import nn
-from torch.optim import Adam
+from torch.optim import Adam, AdamW
+from torch.optim.lr_scheduler import OneCycleLR
 from pytorch_lightning.core.lightning import LightningModule
 import torchmetrics
 import transformers
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, get_constant_schedule_with_warmup
 from transformers import BertForSequenceClassification, AutoModelForSequenceClassification, AutoConfig
 from scipy.stats import entropy
 from torchmetrics.functional import accuracy
@@ -28,7 +29,7 @@ import time
 from pytorch_lightning.utilities import rank_zero_only
 
 
-def get_model(model_id, dropout):
+def load_encoder(model_id, dropout):
     """
     Loads model and tokenizer in try-except block in case of server denials
     """
@@ -67,7 +68,7 @@ def get_model(model_id, dropout):
             else:
                 raise KeyError('No model found for {}'.format(model_id))
 
-        except requests.HTTPError as exception:
+        except requests.exceptions.RequestException as exception:
             print('Got internal server error. Trying to download model again in 10 seconds..', flush=True)
             print(exception)
             time.sleep(10)
@@ -87,14 +88,15 @@ class TransformerModel(LightningModule):
                  acquisition_fn,
                  mc_iterations,
                  num_gpus,
-                 separate_test_sets):
+                 separate_test_sets,
+                 train_loader):
 
         super().__init__()
         self.save_hyperparameters()
 
         # transformers.logging.set_verbosity_error()
         self.dropout = dropout # dropout applied to BERT
-        self.lr = lr  # learning rate
+        self.learning_rate = lr  # learning rate
         self.max_length = 180
         self.batch_size = batch_size
         self.acquisition_fn = acquisition_fn
@@ -105,9 +107,12 @@ class TransformerModel(LightningModule):
         self.test_set_id = ''
         self.dev_set_id = ''
 
+        self.pred_confidences = {}
+        self.train_loader = train_loader
+
         # load pre-trained, uncased, sequence-classification BERT model
-        self.tokenizer, self.encoder = get_model(model_id=model_id,
-                                                 dropout=dropout)
+        self.tokenizer, self.encoder = load_encoder(model_id=model_id,
+                                                    dropout=dropout)
 
         # init metrics
         self.init_metrics()
@@ -121,8 +126,27 @@ class TransformerModel(LightningModule):
         self.encoder = None
 
     def configure_optimizers(self):
+
         """This method handles optimization of params for PyTorch lightning"""
-        return Adam(self.parameters(), lr=self.lr)
+        optimizer = AdamW(self.parameters(), lr=self.learning_rate)
+        # scheduler = OneCycleLR(optimizer, max_lr=self.learning_rate, steps_per_epoch=len(self.trainer.data_loader),
+        #                        epochs=10)
+        scheduler = get_constant_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=1000)
+
+        return (
+            [optimizer],
+            [
+                {
+                    'scheduler': scheduler,
+                    'interval': 'step',
+                    'frequency': 1,
+                    'reduce_on_plateau': False,
+                    'monitor': 'val_loss',
+                }
+            ]
+        )
 
     def forward(self, input_ids, attention_masks, token_type_ids, labels):
 
@@ -134,12 +158,24 @@ class TransformerModel(LightningModule):
 
         return output
 
+    def log_confidences(self, sample_ids, gold_confidences):
+
+        for sample_id, gold_confidence in zip(sample_ids, gold_confidences):
+            if sample_id in self.pred_confidences:
+                self.pred_confidences[sample_id].append(gold_confidence)
+            else:
+                self.pred_confidences[sample_id] = [gold_confidence]
+
+        return None
+
     def training_step(self, batch, batch_idx):
 
         input_ids = batch['input_ids']
         token_type_ids = batch['token_type_ids']
         attention_masks = batch['attention_masks']
         labels = batch['labels']
+        sample_ids = batch['sample_ids']
+        dataset_ids = batch['dataset_ids']
 
         outputs = self(input_ids=input_ids,
                        attention_masks=attention_masks,
@@ -148,8 +184,31 @@ class TransformerModel(LightningModule):
 
         loss = outputs.loss
         preds = outputs.logits
+
+        # select logits from correct labels
+        # print(preds, flush=True)
+        # print(labels, flush=True)
+        # confidences = torch.index_select(input=preds,
+        #                                  dim=1,
+        #                                  index=labels).tolist()
+        confidences = preds[range(preds.shape[0]), labels].tolist()
+
+        # print(confidences, flush=True)
+
+        self.log_confidences(sample_ids=sample_ids,
+                             gold_confidences=confidences)
+
+        # print(self.pred_confidences, flush=True)
+
+
+        # gold_logits = preds.select(labels) ofzo
+        # map_metrics = {'sample_ids'=sample_ids, }
+        # log_logits(sample_ids=sample_ids,
+        #            gold_logits=gold_logits)
+
         acc = self.train_acc(preds, labels)
         metrics = {'train_acc': acc, 'loss': loss}
+
         self.log_dict(metrics,
                       batch_size=self.batch_size,
                       on_step=True,
@@ -261,6 +320,9 @@ class TransformerModel(LightningModule):
             return self.embedding_step(batch, batch_idx)
 
         elif self.acquisition_fn == 'dal':
+            return self.embedding_step(batch, batch_idx)
+
+        elif self.acquisition_fn == 'embedding':
             return self.embedding_step(batch, batch_idx)
 
     def on_predict_epoch_end(self, results):

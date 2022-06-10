@@ -1,11 +1,11 @@
 #!/bin/bash
 
-#SBATCH --partition=gpu_titanrtx_shared
+#SBATCH --partition=gpu_short
 #SBATCH --gres=gpu:1
 #SBATCH --job-name=test_run
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=3
-#SBATCH --time=00:30:00
+#SBATCH --time=00:05:00
 #SBATCH --mem=32000M
 #SBATCH --output=slurm/output_%A.out
 
@@ -32,33 +32,30 @@ srun python main.py \
             --input_dir "$TMPDIR/ard_data" \
             --output_dir "$TMPDIR/ard_output_dir_results" \
             --checkpoint_dir "$TMPDIR/ard_output_dir_checkpoints" \
-            --project_dir="array" \
-            --array_uid="OOD MNLI val loss monitor val_check every 50 LR warmup 1000 steps test" \
-            --model_id="roberta-large" \
-            --train_sets="SNLI_0.5,ANLI_0.5,WANLI_0.0" \
-            --dev_sets="SNLI,ANLI,WANLI" \
-            --ood_sets="MNLI" \
-            --test_sets="SNLI,ANLI,WANLI,MNLI" \
+            --project_dir="test" \
+            --array_uid="OOD non al test" \
+            --model_id="bert-base-uncased" \
+            --train_sets="SNLI_0.0,WANLI_0.75,ANLI_0.25,MNLI_0.0" \
+            --dev_sets="WANLI" \
+            --test_sets="WANLI,MNLI,SNLI,ANLI" \
             --max_train_size=4000\
             --max_dev_size=2200\
             --seed_size=4000 \
-            --downsample_rate=1.00\
+            --downsample_rate=1.0\
             --labelling_batch_size=0 \
             --al_iterations=0 \
+            --acquisition_fn="random" \
             --dropout=0.3 \
-            --mc_iterations=4 \
             --lr=2e-5 \
-            --batch_size=8 \
-            --accumulate_grad_batches=4 \
-            --patience=10 \
-            --monitor="val_loss" \
-            --num_workers=0 \
-            --val_check_interval=0.20 \
-            --progress_bar \
+            --batch_size=32 \
+            --max_epochs=1 \
+            --patience=1 \
+            --monitor="val_acc" \
+            --num_workers=3 \
             --precision=16 \
             --log_every=1 \
+            --progress_bar \
             --refresh_rate=25 \
-            --acquisition_fn="random" \
             --seed=43 \
 
 cp -r "$TMPDIR"/ard_output_dir_results $HOME/active_learning/results

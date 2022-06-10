@@ -5,7 +5,7 @@
 #SBATCH --job-name=test_run
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=3
-#SBATCH --time=00:30:00
+#SBATCH --time=04:00:00
 #SBATCH --mem=32000M
 #SBATCH --output=slurm/output_%A.out
 
@@ -32,29 +32,28 @@ srun python main.py \
             --input_dir "$TMPDIR/ard_data" \
             --output_dir "$TMPDIR/ard_output_dir_results" \
             --checkpoint_dir "$TMPDIR/ard_output_dir_checkpoints" \
-            --project_dir="array" \
-            --array_uid="OOD MNLI val loss monitor val_check every 50 LR warmup 1000 steps test" \
+            --project_dir="test" \
+            --array_uid="OOD MNLI active learning test elke 25 steps model check test phase 2" \
             --model_id="roberta-large" \
-            --train_sets="SNLI_0.5,ANLI_0.5,WANLI_0.0" \
+            --train_sets="SNLI_1.0,ANLI_1.0,WANLI_1.0" \
             --dev_sets="SNLI,ANLI,WANLI" \
             --ood_sets="MNLI" \
             --test_sets="SNLI,ANLI,WANLI,MNLI" \
-            --max_train_size=4000\
             --max_dev_size=2200\
-            --seed_size=4000 \
-            --downsample_rate=1.00\
-            --labelling_batch_size=0 \
-            --al_iterations=0 \
+            --seed_size=500 \
+            --downsample_rate=0.05\
+            --labelling_batch_size=250 \
+            --al_iterations=1 \
             --dropout=0.3 \
             --mc_iterations=4 \
-            --lr=2e-5 \
+            --lr=5e-6 \
             --batch_size=8 \
             --accumulate_grad_batches=4 \
             --patience=10 \
-            --monitor="val_loss" \
-            --num_workers=0 \
-            --val_check_interval=0.20 \
+            --val_check_interval=50 \
+            --monitor="val_acc" \
             --progress_bar \
+            --num_workers=0 \
             --precision=16 \
             --log_every=1 \
             --refresh_rate=25 \

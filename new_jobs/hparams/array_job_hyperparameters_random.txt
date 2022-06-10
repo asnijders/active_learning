@@ -1,0 +1,5 @@
+--seed 42 --acquisition_fn=random
+--seed 43 --acquisition_fn=random
+--seed 44 --acquisition_fn=random
+--seed 45 --acquisition_fn=random
+--seed 46 --acquisition_fn=random

@@ -15,58 +15,44 @@ import time
 from src.models import TransformerModel
 from src.datasets import GenericDataModule
 from src.strategies import select_acquisition_fn
-from src.utils import log_results, log_percentages, get_trainer
+from src.utils import log_results, log_percentages, get_trainer, get_model
 
 
-def active(i, config, dm, logger):
+def active_iteration(i, config, dm, logger):
 
-    print('Active Learning iteration: {}\n'.format(i), flush=True)
+    print('Active Learning iteration: {}\n'.format(i + 1), flush=True)
 
-    # -----------------------------------  Fitting model on current labelled dataset ------------------------------
+    # ---------------------------------- Training model on current labelled dataset ------------------------------
     # initialise model
-    model = TransformerModel(model_id=config.model_id,
-                             dropout=config.dropout,
-                             lr=config.lr,
-                             batch_size=config.batch_size,
-                             acquisition_fn=config.acquisition_fn,
-                             mc_iterations=config.mc_iterations,
-                             num_gpus=config.gpus)
-
-    print('initialised model', flush=True)
+    model = get_model(config)
 
     # initialise trainer
     trainer = get_trainer(config=config,
                           logger=logger)
 
-    # initialise dataloaders for current data
-    labelled_loader = dm.labelled_dataloader()
-    val_loader = dm.val_dataloader()
+    # train model
+    model, dm, logger, trainer = train_model(dm=dm,
+                                             config=config,
+                                             model=model,
+                                             logger=logger,
+                                             trainer=trainer)
 
-    # fine-tune model on updated labelled dataset L, from scratch
-    print('\nFitting model on updated labelled pool, from scratch', flush=True)
-    trainer.fit(model=model,
-                train_dataloaders=labelled_loader,
-                val_dataloaders=val_loader)  # fit on labelled data
+    # ---------------------------------------------  Evaluating model  -------------------------------------------
+    # evaluate best checkpoint on dev set
+    evaluate_model(split='dev',
+                   dm=dm,
+                   config=config,
+                   model=model,
+                   trainer=trainer,
+                   logger=wandb)
 
-    # evaluate and log results for current examples
-    results = trainer.validate(model, val_loader)
-    log_results(logger=wandb,
-                results=results,
-                dm=dm)
-
-    # ----------------------------------- Acquiring new instances for labeling -----------------------------------
-    # set training dataset mode to access the unlabelled data
-    dm.train.set_mode('U')
+    # ------------------------------------ Acquiring new instances for labeling ----------------------------------
+    # Exit AL loop if all data was already labelled
+    if dm.has_unlabelled_data() is False:
+        break
 
     # initialise acquisition function
-    acquisition_fn = select_acquisition_fn(fn_id=config.acquisition_fn)
-
-    if len(dm.train.U) == 0:
-        print('All examples were labelled. Terminating Active Learning Loop...')
-        return None
-
-    if config.labelling_batch_size > len(dm.train.U):
-        config.labelling_batch_size = len(dm.train.U)
+    acquisition_fn = select_acquisition_fn(fn_id=config.acquisition_fn, logger=logger)
 
     # determine instances for labeling using provided acquisition fn
     to_be_labelled = acquisition_fn.acquire_instances(config=config,
@@ -74,28 +60,30 @@ def active(i, config, dm, logger):
                                                       dm=dm,
                                                       k=config.labelling_batch_size)
 
-    return to_be_labelled
+    # log share of each dataset in set of queried examples
+    log_percentages(mode='active',
+                    new_indices=to_be_labelled,
+                    logger=wandb,
+                    dm=dm,
+                    epoch=i)
 
-    # # log share of each dataset in queried examples
-    # log_percentages(mode='active',
-    #                 new_indices=to_be_labelled,
-    #                 logger=wandb,
-    #                 dm=dm,
-    #                 epoch=i)
-    #
     # label new instances
+    dm.train.label_instances(indices=to_be_labelled,
+                             active_round=i + 1)
 
-    #
-    # # log makeup of updated labelled pool
-    # log_percentages(mode='makeup',
-    #                 new_indices=None,
-    #                 logger=wandb,
-    #                 dm=dm,
-    #                 epoch=None)
+    # log composition of updated labelled pool
+    log_percentages(mode='makeup',
+                    new_indices=None,
+                    logger=wandb,
+                    dm=dm,
+                    epoch=None)
 
-    # del model
-    # del trainer
-    # del acquisition_fn
-    # del labelled_loader
-    # del val_loader
-    # gc.collect()
+    # delete now-redundant checkpoint
+    # print('WARNING - NOT DELETING CHECKPOINTS',flush=True)
+    # del_checkpoint(trainer.checkpoint_callback.best_model_path)
+
+    # some extra precautions to prevent memory leaks
+    del model
+    del trainer
+    del acquisition_fn
+    gc.collect()

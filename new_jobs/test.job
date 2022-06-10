@@ -1,11 +1,11 @@
 #!/bin/bash
 
-#SBATCH --partition=gpu_titanrtx_short
+#SBATCH --partition=gpu_titanrtx_shared
 #SBATCH --gres=gpu:1
 #SBATCH --job-name=test_run
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=3
-#SBATCH --time=00:10:00
+#SBATCH --time=00:30:00
 #SBATCH --mem=32000M
 #SBATCH --output=slurm/output_%A.out
 
@@ -33,28 +33,30 @@ srun python main.py \
             --output_dir "$TMPDIR/ard_output_dir_results" \
             --checkpoint_dir "$TMPDIR/ard_output_dir_checkpoints" \
             --project_dir="test" \
-            --array_uid="OOD non al test" \
+            --array_uid="checkpoint test foute mix" \
             --model_id="roberta-large" \
-            --datasets="SNLI,ANLI,WANLI,MNLI" \
-            --data_ratios="0.0,0.25,0.75,0" \
-            --exclude_training="MNLI,SNLI" \
-            --max_pool_size=4000\
+            --train_sets="SNLI_1.0,ANLI_0.0,WANLI_0.0" \
+            --dev_sets="SNLI,ANLI,WANLI" \
+            --test_sets="SNLI,ANLI,WANLI,MNLI" \
+            --max_train_size=4000 \
             --seed_size=4000 \
-            --downsample_rate=1.0\
+            --max_dev_size=2200 \
+            --downsample_rate=1.0 \
             --labelling_batch_size=0 \
             --al_iterations=0 \
             --acquisition_fn="random" \
             --dropout=0.3 \
-            --lr=2e-5 \
-            --batch_size=32 \
-            --max_epochs=5 \
-            --patience=8 \
+            --lr=1e-5 \
+            --batch_size=8 \
+            --accumulate_grad_batches=8 \
+            --max_epochs=10 \
+            --min_epochs=10 \
+            --patience=10 \
             --monitor="val_acc" \
-            --num_workers=3 \
+            --num_workers=0 \
             --precision=16 \
             --log_every=1 \
-            --progress_bar \
             --refresh_rate=25 \
-            --seed=43 \
+            --seed=46 \
 
 cp -r "$TMPDIR"/ard_output_dir_results $HOME/active_learning/results

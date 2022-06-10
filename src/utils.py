@@ -9,7 +9,7 @@ import gc
 import torch
 from pytorch_lightning import Trainer
 from pytorch_lightning.utilities import rank_zero_only
-from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
+from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint, StochasticWeightAveraging, Callback, LearningRateMonitor
 from src.models import TransformerModel
 import os
 
@@ -45,7 +45,17 @@ def log_results(logger, results, dm): # TODO put this in a Logger class
     return None
 
 
-def get_model(config):
+def set_val_check_interval(current_iter, total_iters):
+
+    # initially the training set is small, and we don't want to evaluate every few examples.
+    # so we set val_check_interval to 1.0 at AL_iter = 0. As acquisition progresses we evaluate more often
+    # we evaluate 5 times per epoch at most (1/0.20 = 5)
+    return max(0.20,
+               (1.0 - (current_iter * 1/total_iters))
+               )
+
+
+def get_model(config, train_loader):
     """
     simple fn for initialising model
     """
@@ -57,7 +67,8 @@ def get_model(config):
                              acquisition_fn=config.acquisition_fn,
                              mc_iterations=config.mc_iterations,
                              num_gpus=config.gpus,
-                             separate_test_sets=config.separate_test_sets)
+                             separate_test_sets=config.separate_test_sets,
+                             train_loader=train_loader)
 
     return model
 
@@ -82,13 +93,25 @@ def get_trainer(config, logger, batch_size=None, gpus=None):
 
         # Init early stopping
         early_stopping_callback = EarlyStopping(monitor=config.monitor,
-                                                min_delta=0.00,
                                                 patience=config.patience,
                                                 verbose=True,
                                                 mode=mode)
 
+        # overfit_early_stop = EarlyStopping(monitor='train_acc_epoch',
+        #                                    patience=5,
+        #                                    stopping_threshold=0.98,
+        #                                    verbose=True,
+        #                                    mode="max",
+        #                                    check_on_train_epoch_end=True)
+
+        # model_failure_early_stop = EarlyStopping(monitor='val_acc_epoch',
+        #                                          patience=6,
+        #                                          divergence_threshold=0.41,
+        #                                          verbose=True,
+        #                                          mode=mode)
+
         # Init ModelCheckpoint callback, monitoring 'config.monitor'
-        run_dir = config.checkpoint_dir + '/' + config.acquisition_fn + '/' + str(config.seed) + '/'
+        run_dir = config.checkpoint_dir + '/' + config.array_uid.replace(' ','_') + '/' + config.acquisition_fn + '/' + '_'.join(config.train_sets).replace('.','-') + '/' + str(config.seed) + '/'
         checkpoint_callback = ModelCheckpoint(monitor=config.monitor,
                                               mode=mode,
                                               save_top_k=1,
@@ -96,7 +119,17 @@ def get_trainer(config, logger, batch_size=None, gpus=None):
                                               filename='{epoch}-{step}-{val_loss:.2f}-{val_acc:.2f}',
                                               verbose=True)
 
-        callbacks = [early_stopping_callback, checkpoint_callback]
+        lr_monitor = LearningRateMonitor(logging_interval='step')
+
+
+        callbacks = [
+                     early_stopping_callback,
+                     # overfit_early_stop,
+                     checkpoint_callback,
+                     lr_monitor]  # StochasticWeightAveraging(swa_lrs=1e-2)]
+
+        # print('WARNING: CALLBACKS IS SET TO NONE (NO CHECKPOINTING OR ANYTHING RELATED)')
+        # callbacks = None
         epochs = config.max_epochs
         val_check_interval = config.val_check_interval
 
@@ -115,10 +148,10 @@ def get_trainer(config, logger, batch_size=None, gpus=None):
                       log_every_n_steps=config.log_every,
                       accelerator=config.accelerator,
                       max_epochs=epochs,
-                      min_epochs=2,
+                      min_epochs=config.min_epochs,
                       deterministic=True,
                       enable_checkpointing=True,
-                      enable_model_summary=False,
+                      enable_model_summary=True,
                       val_check_interval=val_check_interval,
                       num_sanity_val_steps=1,
                       limit_val_batches=config.toy_run,
@@ -126,9 +159,47 @@ def get_trainer(config, logger, batch_size=None, gpus=None):
                       limit_test_batches=config.toy_run,
                       progress_bar_refresh_rate=config.refresh_rate,
                       enable_progress_bar=config.progress_bar,
-                      precision=config.precision)
+                      precision=config.precision,
+                      overfit_batches=config.overfit_batches,
+                      accumulate_grad_batches=config.accumulate_grad_batches)
 
     return trainer
+
+
+def evaluation_check(dm, config, model, trainer, current_results):
+
+    print('WARNING: performing model check using aggregate dev sets', flush=True)
+    checkpoint_loader = dm.val_dataloader()
+    results = trainer.validate(model, checkpoint_loader)[0]
+
+    print(results.keys(), flush=True)
+    val_res = results['val_acc_epoch']
+
+    print('Validation accuracy: {}'.format(val_res), flush=True)
+    failure = None
+    if val_res < 0.41:
+
+        print('Previous model failed. Re-training model for this iteration!', flush=True)
+        failure = True
+        return failure, val_res
+
+    if len(current_results) > 0:
+
+        # we restart training for this iteration if:
+        #   current result is poorer than previous iter
+        #   current result is only a marginal improvement w.r.t previous iter
+        # if val_res - current_results[-1] < 0:
+        #     failure = True
+
+        # if the current result is more than 5 points lower than the previous result, restart training
+        if val_res - current_results[-1] < -0.01:
+            print('Difference between current iteration ({}) and last iteration ({}) is greater than 0.05. Re-training model for this iteration!'.format(val_res, current_results[-1]), flush=True)
+            failure = True
+
+        else:
+            failure = False
+
+    return failure, val_res
 
 
 def train_model(dm, config, model, logger, trainer):
@@ -158,10 +229,12 @@ def train_model(dm, config, model, logger, trainer):
 
     # fine-tune model on (updated) labelled dataset L, from scratch, while checkpointing model weights
     print('\nFitting model on updated labelled pool, from scratch', flush=True)
+
     trainer.fit(model=model,
                 train_dataloaders=labelled_loader,
                 val_dataloaders=checkpoint_loader)
 
+    # print('CHECKPOINTING DISABLED!',flush=True)
     # return model checkpoint with lowest dev loss
     if config.debug is False:
         print('\nLoading checkpoint: {}'.format(trainer.checkpoint_callback.best_model_path))
@@ -191,7 +264,6 @@ def evaluate_model(dm, config, model, trainer, logger, split):
                                                    dataset_ids=dm.test.L['Dataset'].unique())
 
             for test_loader, dataset_id in zip(test_loaders, dm.test.L['Dataset'].unique()):
-
 
                 model.test_set_id = dataset_id + '_'
                 model.init_metrics()
@@ -224,13 +296,6 @@ def evaluate_model(dm, config, model, trainer, logger, split):
 
             for dev_loader, dataset_id in zip(dev_loaders, dm.val.L['Dataset'].unique()):
 
-                # # TODO add a flag here to disable multi-dev-set evaluation for non-AL runs
-                # if config.data_ratios is not None: # if this is true, we're doin a non-AL run.
-                #
-                #     if dataset_id != config.checkpoint_datasets[0]:
-                #         print('Validation Warning: non-AL run - skipping evaluation on {} to save compute'.format(dataset_id), flush=True)
-                #         continue
-
                 model.dev_set_id = dataset_id + '_'
                 model.init_metrics()
                 print('Validation results for {}'.format(dataset_id), flush=True)
@@ -254,6 +319,26 @@ def evaluate_model(dm, config, model, trainer, logger, split):
             log_results(logger=logger,
                         results=results,
                         dm=dm)
+
+        ### OOD evaluation
+        if config.ood_sets is not None:
+
+            print('Evaluating best model on OOD {} set'.format(split), flush=True)
+            dev_loader = dm.separate_loader(sub_datapool=dm.ood_val)
+
+            dataset_id = dm.ood_val.L['Dataset'].unique()[0]
+            model.dev_set_id = dataset_id + '_'
+            model.init_metrics()
+            print('OOD Validation results for {}'.format(dataset_id), flush=True)
+            results = trainer.validate(model, dev_loader)
+
+            # log test results
+            log_results(logger=logger,
+                        results=results,
+                        dm=dm)
+
+            # reset dev set identifier to empty string
+            model.dev_set_id = ''
 
 
 def log_percentages(mode, new_indices, logger, dm, epoch):
@@ -314,6 +399,7 @@ def del_checkpoint(filepath, verbose=True):
             print('Removed checkpoint at {}!'.format(filepath), flush=True)
 
     except Exception:
+        print('No checkpoint found for {}!'.format(filepath), flush=True)
         pass
 
 
