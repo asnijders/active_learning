@@ -202,7 +202,7 @@ def evaluation_check(dm, config, model, trainer, current_results):
     return failure, val_res
 
 
-def train_model(dm, config, model, logger, trainer):
+def train_model(dm, config, model, logger, trainer, inference_during_training=False):
     """
     Trains provided model on labelled data, whilst checkpointing on one or more datasets
     :param dm: Data Module obj
@@ -226,6 +226,9 @@ def train_model(dm, config, model, logger, trainer):
         # dev loader for specified checkpointing dataset(s)
         checkpoint_loader = dm.get_separate_loaders(split='dev',
                                                     dataset_ids=config.checkpoint_datasets)
+
+        # if inference_during_training:
+        #     checkpoint_loader = [checkpoint_loader, dm.labelled_dataloader(shuffle=False)]
 
     # fine-tune model on (updated) labelled dataset L, from scratch, while checkpointing model weights
     print('\nFitting model on updated labelled pool, from scratch', flush=True)

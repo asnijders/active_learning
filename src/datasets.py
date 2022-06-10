@@ -647,7 +647,7 @@ class DataPool(Dataset):
         #         print('Duplicate samples:')
         #         print(sample_id, flush=True)
 
-        print('{} duplicates found in acquired data'.format(len(indices)-len(set(indices))), flush=True)
+        print('{} duplicates found in acquired data'.format(len(seen)), flush=True)
         indices = list(set(indices))
 
         return indices

@@ -65,10 +65,14 @@ def main(args):
     # Metric computation if specified
     metrics = None
     if config.metrics:
+        # metrics = Metrics(config=config,
+        #                   train_logger=logger,
+        #                   metric_logger=wandb)
+        # metrics.compute_input_diversity()
         metrics = Metrics(config=config,
                           train_logger=logger,
                           metric_logger=wandb)
-        metrics.compute_all_metrics()
+        metrics.compute_uncertainty()
         sys.exit()
 
     # --------------------------------------- Active learning: Seed phase ---------------------------------------------

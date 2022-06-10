@@ -1,4 +1,5 @@
 import torch
+import copy
 import numpy as np
 
 from src.utils import get_trainer, train_model, del_checkpoint, get_model
@@ -179,18 +180,22 @@ class Metrics:
     
     def compute_uncertainty(self):
 
+        self.init_dm()
+
         # move everything to labelled set
         unlabelled_indices = self.dm.train.U.index.values.tolist()
-        self.dm.train.label_instances(unlabelled_indices)
+        self.dm.train.label_instances(unlabelled_indices,
+                                      active_round=None,
+                                      save_ids=False)
 
-        # train model on labelled set
-        model = self._train_model(
-
-        predictions = self.run_inference(model=model,
-                                         dataloader=self.dm.labelled_dataloader(shuffle=False),
-                                         inference_type='max-entropy')
-
-        entropies = entropy(predictions, axis=1)
+        # # train model on labelled set
+        # model = self._train_model()
+        #
+        # predictions = self.run_inference(model=model,
+        #                                  dataloader=self.dm.labelled_dataloader(shuffle=False),
+        #                                  inference_type='max-entropy')
+        #
+        # entropies = entropy(predictions, axis=1)
 
         # obtain indices of previously acquired data
         previous_indices = self.dm.train.load_past_indices(min_round=0,
@@ -203,11 +208,52 @@ class Metrics:
 
     def compute_datamap(self):
 
+        print('Computing datamaps', flush=True)
         self.init_dm()
-        
-        0. initialise new model
-        1. train model on data for single epoch
-        2. use model to perform inference on training set
+
+        # move everything to labelled set
+        unlabelled_indices = self.dm.train.U.index.values.tolist()
+        self.dm.train.label_instances(unlabelled_indices,
+                                      active_round=None,
+                                      save_ids=False)
+
+        # train over 10 epochs
+        config_copy = copy.deepcopy(self.config)
+        config_copy.max_epochs = 1  # train for 1 epoch per trainer.fit instance at most
+        config.copy.toy_run = 1
+
+        model = get_model(config=config_copy,
+                          train_loader=self.dm.labelled_dataloader())
+
+        trainer = get_trainer(config=config_copy,
+                              logger=self.train_logger)
+
+        for i in range(10):
+
+            print('Training model for epoch: {}'.format(i), flush=True)
+
+            # train model
+            model, dm, logger, trainer = train_model(dm=self.dm,
+                                                     config=config_copy,
+                                                     model=model,
+                                                     logger=self.train_logger,
+                                                     trainer=trainer)
+
+            # get predictions
+            print('Running inference over training set.. ', flush=True)
+            output = trainer.predict(model, dataloader=self.dm.labelled_dataloader(shuffle=False))
+            output = torch.cat(output, dim=0)
+            output = output.numpy()
+
+            # get label confidences
+            labels = self.dm.train.L['Label'].tolist()
+            confidences = [row[idx] for row, idx in zip(output, labels)]
+            self.dm.train.L['predictions_epoch_{}'.format(i)] = confidences
+
+
+
+
+
         
 
         
