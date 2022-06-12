@@ -410,6 +410,7 @@ if __name__ == '__main__':
 
     # Metrics args
     parser.add_argument('--metrics', action='store_true', help='toggle metrics computation')
+    parser.add_argument('--datamap', action='store_true', help='toggle datamap computation')
     parser.add_argument('--metrics_uid', default=None, type=str, help='id for existing run folder')
 
     log_every = 50 if device_count() > 0 else 1

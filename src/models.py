@@ -14,7 +14,6 @@ import numpy as np
 import torch
 from torch import nn
 from torch.optim import Adam, AdamW
-from torch.optim.lr_scheduler import OneCycleLR
 from pytorch_lightning.core.lightning import LightningModule
 import torchmetrics
 import transformers
@@ -95,7 +94,7 @@ class TransformerModel(LightningModule):
         self.save_hyperparameters()
 
         # transformers.logging.set_verbosity_error()
-        self.dropout = dropout # dropout applied to BERT
+        self.dropout = dropout  # dropout applied to BERT
         self.learning_rate = lr  # learning rate
         self.max_length = 180
         self.batch_size = batch_size
@@ -161,7 +160,7 @@ class TransformerModel(LightningModule):
     def log_confidences(self, sample_ids, gold_confidences):
 
         for sample_id, gold_confidence in zip(sample_ids, gold_confidences):
-            if sample_id in self.pred_confidences:
+            if sample_id in self.pred_confidences.keys():
                 self.pred_confidences[sample_id].append(gold_confidence)
             else:
                 self.pred_confidences[sample_id] = [gold_confidence]
@@ -184,27 +183,6 @@ class TransformerModel(LightningModule):
 
         loss = outputs.loss
         preds = outputs.logits
-
-        # select logits from correct labels
-        # print(preds, flush=True)
-        # print(labels, flush=True)
-        # confidences = torch.index_select(input=preds,
-        #                                  dim=1,
-        #                                  index=labels).tolist()
-        confidences = preds[range(preds.shape[0]), labels].tolist()
-
-        # print(confidences, flush=True)
-
-        self.log_confidences(sample_ids=sample_ids,
-                             gold_confidences=confidences)
-
-        # print(self.pred_confidences, flush=True)
-
-
-        # gold_logits = preds.select(labels) ofzo
-        # map_metrics = {'sample_ids'=sample_ids, }
-        # log_logits(sample_ids=sample_ids,
-        #            gold_logits=gold_logits)
 
         acc = self.train_acc(preds, labels)
         metrics = {'train_acc': acc, 'loss': loss}
@@ -281,6 +259,30 @@ class TransformerModel(LightningModule):
     #         '{}test_acc'.format(self.test_set_id): avg_acc,
     #         'progress_bar': {'{}test_loss'.format(self.test_set_id): avg_loss,
     #                          '{}test_acc'.format(self.test_set_id): avg_acc}}
+
+    def datamap_step(self, batch):
+
+        input_ids = batch['input_ids']
+        token_type_ids = batch['token_type_ids']
+        attention_masks = batch['attention_masks']
+        labels = batch['labels']
+        sample_ids = batch['sample_ids']
+
+        outputs = self(input_ids=input_ids,
+                       attention_masks=attention_masks,
+                       token_type_ids=token_type_ids,
+                       labels=labels)
+
+        preds = torch.softmax(outputs.logits.detach(), dim=1)
+
+        confidences = preds[range(preds.shape[0]), labels].tolist()
+
+        self.log_confidences(sample_ids=sample_ids,
+                             gold_confidences=confidences)
+
+        return None
+
+
 
     def _shared_eval_step(self, batch, batch_idx):
 
@@ -446,49 +448,6 @@ class TransformerModel(LightningModule):
 
         # re-enable dropout for MC dropout
         self.encoder.apply(self.apply_dropout)
-
-        # def get_outputs(_input_ids,
-        #                 _attention_masks,
-        #                 _token_type_ids,
-        #                 _labels):
-        #
-        #     single_output = torch.softmax(self(input_ids=_input_ids,
-        #                                        attention_masks=_attention_masks,
-        #                                        token_type_ids=_token_type_ids,
-        #                                        labels=_labels).logits, dim=1)
-        #
-        #     single_prediction = torch.distributions.distribution.Distribution(single_output)
-        #     single_disagreements = single_prediction.entropy()
-        #
-        #     return single_prediction.numpy(), single_disagreements.numpy()
-        #
-        # for _ in range(self.mc_iterations):
-        #
-        #     prediction, disagreement = get_outputs(_input_ids=input_ids,
-        #                                            _attention_masks=attention_masks,
-        #                                            _token_type_ids=token_type_ids,
-        #                                            _labels=labels)
-        #     predictions.append(prediction)
-        #     disagreements.append(disagreement)
-        #
-        # entropies = entropy(np.mean(predictions, axis=0), axis=1)
-        # disagreements = np.mean(disagreements, axis=0)
-        # return list(entropies - disagreements)
-
-        # mc_output = [get_outputs(_input_ids=input_ids,
-        #                          _attention_masks=attention_masks,
-        #                          _token_type_ids=token_type_ids,
-        #                          _labels=labels) for _ in range(self.mc_iterations)]
-        #
-        # # output = [get_outputs(batch) for _ in range(self.mc_iterations)]
-        #
-        # output = torch.vstack([
-        #
-        #     torch.softmax(self(input_ids=input_ids,
-        #                        attention_masks=attention_masks,
-        #                        token_type_ids=token_type_ids,
-        #                        labels=labels).logits,
-        #                   dim=1).unsqueeze(0) for _ in range(self.mc_iterations)]).mean(dim=0)
 
         predictions = []
         disagreements = []

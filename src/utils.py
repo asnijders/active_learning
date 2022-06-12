@@ -14,6 +14,36 @@ from src.models import TransformerModel
 import os
 
 
+class DatamapCallback(Callback):
+
+    def on_train_epoch_end(self, trainer, pl_module):
+
+        train_loader = trainer.train_dataloader
+
+        torch.set_grad_enabled(False)
+        pl_module.eval()
+
+        for batch in train_loader:
+
+            batch['input_ids'] = batch['input_ids'].to(pl_module.device)
+            batch['token_type_ids'] = batch['token_type_ids'].to(pl_module.device)
+            batch['attention_masks'] = batch['attention_masks'].to(pl_module.device)
+            batch['labels'] = batch['labels'].to(pl_module.device)
+
+            pl_module.datamap_step(batch)
+        #     check if truncation drop lastremoves error
+        # implement on train end callback fn to save dict to file
+        # chANGE JOB script
+
+        torch.set_grad_enabled(True)
+        pl_module.train()
+
+        print(pl_module.pred_confidences, flush=True)
+        print(len(pl_module.pred_confidences.keys()), flush=True)
+
+        return None
+
+
 def create_project_filepath(config):
     """ Creates a logical filepath using provided experiment parameters """
 
@@ -97,6 +127,8 @@ def get_trainer(config, logger, batch_size=None, gpus=None):
                                                 verbose=True,
                                                 mode=mode)
 
+
+
         # overfit_early_stop = EarlyStopping(monitor='train_acc_epoch',
         #                                    patience=5,
         #                                    stopping_threshold=0.98,
@@ -121,12 +153,14 @@ def get_trainer(config, logger, batch_size=None, gpus=None):
 
         lr_monitor = LearningRateMonitor(logging_interval='step')
 
-
-        callbacks = [
-                     early_stopping_callback,
-                     # overfit_early_stop,
+        callbacks = [early_stopping_callback,
                      checkpoint_callback,
                      lr_monitor]  # StochasticWeightAveraging(swa_lrs=1e-2)]
+
+        if config.datamap:
+
+            datamap_callback = DatamapCallback()
+            callbacks.append(datamap_callback)
 
         # print('WARNING: CALLBACKS IS SET TO NONE (NO CHECKPOINTING OR ANYTHING RELATED)')
         # callbacks = None

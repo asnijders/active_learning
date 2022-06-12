@@ -225,6 +225,8 @@ def read_dataset(input_dir, dataset_id, split, seed):
     # ensure consistent headers per dataset DataFrame
     dataset.columns = ['Premise', 'Hypothesis', 'Label', 'ID', 'Dataset']
 
+    dataset['ID'] = dataset['ID'].astype('string')
+
     return dataset
 
 
@@ -789,7 +791,7 @@ class GenericDataModule(pl.LightningDataModule):
                           batch_size=self.config.batch_size,
                           num_workers=self.config.num_workers,
                           pin_memory=self.pin_memory,
-                          drop_last=True)
+                          drop_last=False)
 
     def val_dataloader(self):
 
@@ -799,7 +801,7 @@ class GenericDataModule(pl.LightningDataModule):
                           batch_size=self.config.batch_size,
                           num_workers=self.config.num_workers,
                           pin_memory=self.pin_memory,
-                          drop_last=True)
+                          drop_last=False)
 
     def test_dataloader(self):
 
@@ -809,7 +811,7 @@ class GenericDataModule(pl.LightningDataModule):
                           batch_size=self.config.batch_size,
                           num_workers=self.config.num_workers,
                           pin_memory=self.pin_memory,
-                          drop_last=True)
+                          drop_last=False)
 
     def labelled_dataloader(self, shuffle=True):
 
@@ -820,7 +822,7 @@ class GenericDataModule(pl.LightningDataModule):
                           batch_size=self.config.batch_size,
                           num_workers=self.config.num_workers,
                           pin_memory=self.pin_memory,
-                          drop_last=True)
+                          drop_last=False)
 
     def unlabelled_dataloader(self, batch_size=None, shuffle=False):
 
@@ -832,7 +834,7 @@ class GenericDataModule(pl.LightningDataModule):
                           batch_size=batch_size,
                           num_workers=self.config.num_workers,
                           pin_memory=self.pin_memory,
-                          drop_last=True)
+                          drop_last=False)
 
     def separate_loader(self, sub_datapool):
 
@@ -842,7 +844,7 @@ class GenericDataModule(pl.LightningDataModule):
                           batch_size=self.config.batch_size,
                           num_workers=self.config.num_workers,
                           pin_memory=self.pin_memory,
-                          drop_last=True)
+                          drop_last=False)
 
     def get_separate_loaders(self, split, dataset_ids):
 
