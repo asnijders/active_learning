@@ -117,9 +117,10 @@ def apply_ratios(pool, dataset_ids, data_ratios, max_pool_size, seed):
     return new_pool
 
 
-def read_dataset(input_dir, dataset_id, split, seed):
+def read_dataset(input_dir, dataset_id, split, seed, wanli_id):
     """
     This function takes a dataset id and reads the corresponding .json split in an appropriate Pandas DataFrame
+    :param wanli_id: id key for wanli json file (pairID for metrics, id for non metric stuff)
     :param seed:
     :param input_dir:
     :param dataset_id: str indicating which dataset should be read
@@ -204,7 +205,7 @@ def read_dataset(input_dir, dataset_id, split, seed):
             data_path = '{}/wanli/test.jsonl'.format(input_dir)
 
         dataset = pd.read_json(data_path, lines=True)
-        dataset = dataset[['premise', 'hypothesis', 'gold', 'pairID']]
+        dataset = dataset[['premise', 'hypothesis', 'gold', wanli_id]]
         dataset['dataset'] = 'WANLI'
         dataset = dataset.drop(dataset[dataset.gold.str.contains('-')].index)
 
@@ -240,6 +241,7 @@ def combine_datasets(input_dir,
                      split,
                      downsample_rate,
                      seed,
+                     wanli_id,
                      undersample,
                      perturb):
     """
@@ -278,7 +280,8 @@ def combine_datasets(input_dir,
         dataset = read_dataset(input_dir=input_dir,
                                dataset_id=dataset_id,
                                split=split,
-                               seed=seed)
+                               seed=seed,
+                               wanli_id=wanli_id)
 
         if split == 'train' and data_ratios != None and max_pool_size != None:
 
@@ -396,6 +399,7 @@ class DataPool(Dataset):
                                       split=split,
                                       downsample_rate=self.downsample_rate,
                                       seed=self.random_seed,
+                                      wanli_id=self.config.wanli_id_key,
                                       undersample=self.undersample,
                                       perturb=self.perturb)
 
@@ -418,6 +422,7 @@ class DataPool(Dataset):
                                       split=split,
                                       downsample_rate=self.downsample_rate,
                                       seed=self.random_seed,
+                                      wanli_id=self.config.wanli_id_key,
                                       undersample=self.undersample,
                                       perturb=self.perturb)
 

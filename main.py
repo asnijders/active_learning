@@ -63,16 +63,11 @@ def main(args):
         print('\nNOTE: DOWN-SAMPLING - ONLY CONSIDERING {}% OF DATA\n'.format(config.downsample_rate * 100), flush=True)
 
     # Metric computation if specified
-    metrics = None
-    if config.metrics:
-        # metrics = Metrics(config=config,
-        #                   train_logger=logger,
-        #                   metric_logger=wandb)
-        # metrics.compute_input_diversity()
+    if config.metric is not None:
         metrics = Metrics(config=config,
                           train_logger=logger,
                           metric_logger=wandb)
-        metrics.compute_uncertainty()
+        metrics.compute_metric(config.metric)
         sys.exit()
 
     # --------------------------------------- Active learning: Seed phase ---------------------------------------------
@@ -375,6 +370,8 @@ if __name__ == '__main__':
                              'choose between "val_loss" and "val_acc"')
     parser.add_argument('--lr', default=5e-6, type=float,
                         help='learning rate')
+    parser.add_argument('--num_warmup_steps', default=None, type=int,
+                        help='warmup steps for learning rate')
     parser.add_argument('--dropout', default=0.3, type=float,
                         help='hidden layer dropout prob')
     parser.add_argument('--max_length', default=350, type=int,
@@ -409,7 +406,9 @@ if __name__ == '__main__':
     parser.add_argument('--progress_bar', action='store_false', help='toggle progress bar')
 
     # Metrics args
-    parser.add_argument('--metrics', action='store_true', help='toggle metrics computation')
+    parser.add_argument('--metric', default=None, type=str, help='toggle metrics computation')
+    parser.add_argument('--wanli_id_key', default='id', type=str, help='wanli id key (pairID for metrics, otherwise id)')
+    # choose from uncertainty, input_diversity, feature_diversity
     parser.add_argument('--datamap', action='store_true', help='toggle datamap computation')
     parser.add_argument('--metrics_uid', default=None, type=str, help='id for existing run folder')
 

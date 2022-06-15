@@ -9,6 +9,9 @@ import sys
 import time
 import os
 import numpy as np
+import pandas as pd
+import csv
+import pickle
 
 # PyTorch modules
 import torch
@@ -23,6 +26,7 @@ from scipy.stats import entropy
 from torchmetrics.functional import accuracy
 import requests
 import time
+from pathlib import Path
 
 
 from pytorch_lightning.utilities import rank_zero_only
@@ -88,7 +92,8 @@ class TransformerModel(LightningModule):
                  mc_iterations,
                  num_gpus,
                  separate_test_sets,
-                 train_loader):
+                 train_loader,
+                 config):
 
         super().__init__()
         self.save_hyperparameters()
@@ -108,6 +113,7 @@ class TransformerModel(LightningModule):
 
         self.pred_confidences = {}
         self.train_loader = train_loader
+        self.config = config
 
         # load pre-trained, uncased, sequence-classification BERT model
         self.tokenizer, self.encoder = load_encoder(model_id=model_id,
@@ -115,6 +121,46 @@ class TransformerModel(LightningModule):
 
         # init metrics
         self.init_metrics()
+
+    def log_confidences(self, sample_ids, gold_confidences):
+
+        for sample_id, gold_confidence in zip(sample_ids, gold_confidences):
+            if sample_id in self.pred_confidences.keys():
+                # print('{} already in dict'.format(sample_id), flush=True)
+                self.pred_confidences[sample_id].append(gold_confidence)
+            else:
+                self.pred_confidences[sample_id] = [gold_confidence]
+
+        return None
+
+    def _log_confidences(self, sample_ids, preds, labels):
+
+        for sample_id, pred, label in zip(sample_ids, preds, labels):
+            pred = pred.tolist()
+            if sample_id in self.pred_confidences.keys():
+                # print('{} already in dict'.format(sample_id), flush=True)
+                self.pred_confidences[sample_id].append((pred, label))
+            else:
+                self.pred_confidences[sample_id] = [(pred, label)]
+
+        return None
+
+    def write_confidences(self):
+
+        parent_dir = self.config.output_dir + '/datamaps/' + self.config.project_dir + '/' + self.config.array_uid.replace(' ', '_') + '/' + self.config.model_id + '/' + self.config.acquisition_fn + '/' + str(self.config.seed)
+        filepath = parent_dir + '/confidences.pickle'
+
+        if not os.path.isfile(filepath):
+            Path(parent_dir).mkdir(parents=True, exist_ok=True)
+
+        print('Pickling confidences!!', flush=True)
+        if os.path.isfile(filepath):
+            os.remove(filepath)
+
+        with open(filepath, 'wb') as f:
+            pickle.dump(self.pred_confidences, f, protocol=4)
+
+        return None
 
     def init_metrics(self):
         self.train_acc = torchmetrics.Accuracy()
@@ -130,9 +176,16 @@ class TransformerModel(LightningModule):
         optimizer = AdamW(self.parameters(), lr=self.learning_rate)
         # scheduler = OneCycleLR(optimizer, max_lr=self.learning_rate, steps_per_epoch=len(self.trainer.data_loader),
         #                        epochs=10)
+        if self.config.num_warmup_steps is None:
+            num_warmup_steps = min(500, 4*len(self.train_loader))
+        else:
+            num_warmup_steps = self.config.num_warmup_steps
+
+        print('Num warmup steps:', flush=True)
+        print(num_warmup_steps, flush=True)
         scheduler = get_constant_schedule_with_warmup(
             optimizer,
-            num_warmup_steps=1000)
+            num_warmup_steps=num_warmup_steps)
 
         return (
             [optimizer],
@@ -156,16 +209,6 @@ class TransformerModel(LightningModule):
                               output_hidden_states=True)
 
         return output
-
-    def log_confidences(self, sample_ids, gold_confidences):
-
-        for sample_id, gold_confidence in zip(sample_ids, gold_confidences):
-            if sample_id in self.pred_confidences.keys():
-                self.pred_confidences[sample_id].append(gold_confidence)
-            else:
-                self.pred_confidences[sample_id] = [gold_confidence]
-
-        return None
 
     def training_step(self, batch, batch_idx):
 
@@ -250,16 +293,6 @@ class TransformerModel(LightningModule):
                       sync_dist=False)
         return metrics
 
-    # def test_end(self, outputs):
-    #
-    #     avg_loss = torch.stack([x['{}test_loss'.format(self.test_set_id)] for x in outputs]).mean()
-    #     avg_acc = torch.stack([x['{}test_acc'.format(self.test_set_id)] for x in outputs]).mean()
-    #     return {
-    #         '{}test_loss'.format(self.test_set_id): avg_loss,
-    #         '{}test_acc'.format(self.test_set_id): avg_acc,
-    #         'progress_bar': {'{}test_loss'.format(self.test_set_id): avg_loss,
-    #                          '{}test_acc'.format(self.test_set_id): avg_acc}}
-
     def datamap_step(self, batch):
 
         input_ids = batch['input_ids']
@@ -273,16 +306,18 @@ class TransformerModel(LightningModule):
                        token_type_ids=token_type_ids,
                        labels=labels)
 
-        preds = torch.softmax(outputs.logits.detach(), dim=1)
+        preds = torch.softmax(outputs.logits.detach(), dim=1).cpu().numpy()
 
-        confidences = preds[range(preds.shape[0]), labels].tolist()
+        # confidences = preds[range(preds.shape[0]), labels].tolist()
 
-        self.log_confidences(sample_ids=sample_ids,
-                             gold_confidences=confidences)
+        # self.log_confidences(sample_ids=sample_ids,
+        #                      gold_confidences=confidences)
+
+        self._log_confidences(sample_ids=sample_ids,
+                              preds=preds,
+                              labels=labels.cpu().tolist())
 
         return None
-
-
 
     def _shared_eval_step(self, batch, batch_idx):
 

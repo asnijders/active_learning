@@ -1,12 +1,15 @@
 import torch
 import copy
 import numpy as np
+import os
+from pathlib import Path
 
-from src.utils import get_trainer, train_model, del_checkpoint, get_model
+from src.utils import get_trainer, train_model, del_checkpoint, get_model, evaluation_check
 from src.datasets import GenericDataModule
 from statistics import mean
 from sklearn.neighbors import NearestNeighbors
 from scipy.stats import entropy
+import gc
 
 
 class Metrics:
@@ -36,29 +39,62 @@ class Metrics:
 
         return None
 
-    def compute_all_metrics(self):
+    def compute_metric(self, metric):
 
-        self.compute_input_diversity()
-        # self.compute_feature_diversity()
-        self.compute_uncertainty()
+        if metric == 'uncertainty':
+            self.compute_uncertainty()
+
+        elif metric == 'input_diversity':
+            self.compute_input_diversity()
+
+        elif metric == 'feature_diversity':
+            self.compute_feature_diversity()
+
+        else:
+            raise ValueError('"{}" Is not a valid option! \nChoose from ["uncertainty", "input_diversity", "feature_diversity"]'.format(metric))
 
         return None
 
     def _train_model(self):
 
-        model = get_model(config=self.config,
-                          train_loader=self.dm.labelled_dataloader())
+        all_results = []
 
-        trainer = get_trainer(config=self.config,
-                              logger=self.train_logger)
+        done = False
+        while done is False:
 
-        model, dm, logger, trainer = train_model(dm=self.dm,
-                                                 config=self.config,
-                                                 model=model,
-                                                 logger=self.train_logger,
-                                                 trainer=trainer)
+            model = get_model(config=self.config,
+                              train_loader=self.dm.labelled_dataloader())
 
-        del_checkpoint(trainer.checkpoint_callback.best_model_path)
+            trainer = get_trainer(config=self.config,
+                                  logger=self.train_logger)
+
+            model, dm, logger, trainer = train_model(dm=self.dm,
+                                                     config=self.config,
+                                                     model=model,
+                                                     logger=self.train_logger,
+                                                     trainer=trainer)
+
+            # check whether model ran successfully
+            failure, validation_score = evaluation_check(dm=self.dm,
+                                                         config=self.config,
+                                                         model=model,
+                                                         trainer=trainer,
+                                                         current_results=all_results)
+
+            del_checkpoint(trainer.checkpoint_callback.best_model_path)
+
+            if failure:
+                print('Model failed to learn. Restarting training for this AL iteration with a different seed..',
+                      flush=True)
+                del model
+                del trainer
+                gc.collect()
+                # seed_everything(config.seed+10, workers=True)
+                continue
+
+            else:
+                print('Model evaluation check passed!', flush=True)
+                done = True
 
         return model
 
@@ -74,6 +110,7 @@ class Metrics:
             print('{} is an invalid inference type!'.format(inference_type), flush=True)
         model.acquisition_fn = inference_type
         trainer = get_trainer(self.config, logger=self.train_logger)
+        print('Running inference..', flush=True)
         output = trainer.predict(model, dataloader)
         output = torch.cat(output, dim=0)
         output = output.numpy()
@@ -103,7 +140,9 @@ class Metrics:
             list_of_tokens = []
             # split each sentence into tokens and add to list
             for sentence in dataset['Combined'].tolist():
-                list_of_tokens.extend(sentence.split(' '))
+                for char in [',', '.', '?', '!', ':', ';',"'", '"']:
+                    sentence = sentence.replace(char, '')
+                list_of_tokens.extend(sentence.split())
             # return set of unique tokens
             return set(list_of_tokens)
 
@@ -113,6 +152,9 @@ class Metrics:
 
         intersection = unlabeled_set.intersection(labeled_set)  # get intersection between U and L
         union = unlabeled_set.union(labeled_set)  # get union of U and L
+
+        print(len(union), flush=True)
+        print(len(intersection), flush=True)
 
         input_diversity = len(intersection) / len(union)  # compute Jaccard similarity
 
@@ -135,7 +177,7 @@ class Metrics:
 
         self.init_dm()
 
-        print('Starting procedure to compute feature diversity', flush=True)
+        print('Computing feature diversity', flush=True)
         # 1. Train model on initial data
         print('Training model on initial set of labeled data', flush=True)
         model = self._train_model()
@@ -167,7 +209,7 @@ class Metrics:
             distances, indices = nbrs.kneighbors(unlabelled_features)
             return distances[:, 1]
 
-        print('Computing distances between acquired batch and unlabelled set', flush=True)
+        print('Finished inference.\nComputing distances between acquired batch and unlabelled set', flush=True)
         distances = get_per_element_score(acquired_features=L_features,
                                           unlabelled_features=U_features)
 
@@ -182,20 +224,25 @@ class Metrics:
 
         self.init_dm()
 
+        print('Computing uncertainty metric', flush=True)
+
+        # TODO think of other settings that are exclusive to this kind of larger dataset run?
+
         # move everything to labelled set
         unlabelled_indices = self.dm.train.U.index.values.tolist()
         self.dm.train.label_instances(unlabelled_indices,
                                       active_round=None,
                                       save_ids=False)
 
-        # # train model on labelled set
-        # model = self._train_model()
-        #
-        # predictions = self.run_inference(model=model,
-        #                                  dataloader=self.dm.labelled_dataloader(shuffle=False),
-        #                                  inference_type='max-entropy')
-        #
-        # entropies = entropy(predictions, axis=1)
+        # train model on labelled set
+        model = self._train_model()
+
+        predictions = self.run_inference(model=model,
+                                         dataloader=self.dm.labelled_dataloader(shuffle=False),
+                                         inference_type='max-entropy')
+
+        entropies = entropy(predictions, axis=1)
+
 
         # obtain indices of previously acquired data
         previous_indices = self.dm.train.load_past_indices(min_round=0,
@@ -205,56 +252,3 @@ class Metrics:
 
         print('Uncertainty: {}'.format(metric_uncertainty), flush=True)
         self.log({'metric_uncertainty': metric_uncertainty})
-
-    def compute_datamap(self):
-
-        print('Computing datamaps', flush=True)
-        self.init_dm()
-
-        # move everything to labelled set
-        unlabelled_indices = self.dm.train.U.index.values.tolist()
-        self.dm.train.label_instances(unlabelled_indices,
-                                      active_round=None,
-                                      save_ids=False)
-
-        # train over 10 epochs
-        config_copy = copy.deepcopy(self.config)
-        config_copy.max_epochs = 1  # train for 1 epoch per trainer.fit instance at most
-        config.copy.toy_run = 1
-
-        model = get_model(config=config_copy,
-                          train_loader=self.dm.labelled_dataloader())
-
-        trainer = get_trainer(config=config_copy,
-                              logger=self.train_logger)
-
-        for i in range(10):
-
-            print('Training model for epoch: {}'.format(i), flush=True)
-
-            # train model
-            model, dm, logger, trainer = train_model(dm=self.dm,
-                                                     config=config_copy,
-                                                     model=model,
-                                                     logger=self.train_logger,
-                                                     trainer=trainer)
-
-            # get predictions
-            print('Running inference over training set.. ', flush=True)
-            output = trainer.predict(model, dataloader=self.dm.labelled_dataloader(shuffle=False))
-            output = torch.cat(output, dim=0)
-            output = output.numpy()
-
-            # get label confidences
-            labels = self.dm.train.L['Label'].tolist()
-            confidences = [row[idx] for row, idx in zip(output, labels)]
-            self.dm.train.L['predictions_epoch_{}'.format(i)] = confidences
-
-
-
-
-
-        
-
-        
-

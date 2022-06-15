@@ -2,13 +2,12 @@
 
 #SBATCH --partition=gpu_titanrtx_shared
 #SBATCH --gres=gpu:1
-#SBATCH --job-name=array_run
+#SBATCH --job-name=metrics_test
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=3
-#SBATCH --time=4:00:00
+#SBATCH --time=01:00:00
 #SBATCH --mem=32000M
-#SBATCH --output=slurm/output_%A_%a.out
-#SBATCH --array=1-75%75
+#SBATCH --output=slurm/datamap_test/output_%A.out
 
 module purge
 module load 2021
@@ -18,17 +17,16 @@ cd $HOME/active_learning
 
 # copy all data from home folder to SCRATCH
 cp -r $HOME/active_learning/resources/. "$TMPDIR"
+# also copy acquisition ID data from previous run to SCRATCH
+cp -r $HOME/active_learning/results/. "$TMPDIR"
 
 # create folder on scratch disk to store output
 mkdir "$TMPDIR"/ard_output_dir_checkpoints
-mkdir "$TMPDIR"/ard_output_dir_results
 
 # Your job starts in the directory where you call sbatch
 cd $HOME/active_learning
 # Activate your environment
 source activate active
-
-HPARAMS_FILE=$HOME/active_learning/new_jobs/hparams/array_job_hyperparameters_random.txt
 
 # Run your code
 srun python main.py \
@@ -36,30 +34,35 @@ srun python main.py \
             --output_dir "$TMPDIR/ard_output_dir_results" \
             --checkpoint_dir "$TMPDIR/ard_output_dir_checkpoints" \
             --project_dir="test" \
-            --array_uid="OOD MNLI active learning test elke 25 steps check testje 5" \
+            --array_uid="datamap test" \
+            --datamap \
             --model_id="roberta-large" \
             --train_sets="SNLI_1.0,ANLI_1.0,WANLI_1.0" \
             --dev_sets="SNLI,ANLI,WANLI" \
             --ood_sets="MNLI" \
             --test_sets="SNLI,ANLI,WANLI,MNLI" \
             --max_dev_size=2200\
-            --seed_size=500 \
-            --downsample_rate=0.05\
-            --labelling_batch_size=250 \
-            --al_iterations=14 \
+            --seed_size=1.0 \
+            --downsample_rate=0.01\
+            --labelling_batch_size=0 \
+            --al_iterations=0 \
             --dropout=0.3 \
             --mc_iterations=4 \
-            --lr=5e-6 \
+            --lr=2e-5 \
+            --num_warmup_steps=0 \
             --batch_size=8 \
-            --accumulate_grad_batches=4 \
-            --patience=10 \
-            --val_check_interval=50 \
+            --accumulate_grad_batches=12 \
+            --patience=100 \
+            --max_epochs=1 \
             --monitor="val_acc" \
-            --progress_bar \
+            --val_check_interval=1 \
             --num_workers=0 \
+            --progress_bar \
             --precision=16 \
             --log_every=1 \
             --refresh_rate=25 \
-            $(head -$SLURM_ARRAY_TASK_ID $HPARAMS_FILE | tail -1)
+            --seed=42 \
+            --wanli_id_key="pairID" \
+            --acquisition_fn="bald" \
 
 cp -r "$TMPDIR"/ard_output_dir_results $HOME/active_learning/results

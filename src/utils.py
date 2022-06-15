@@ -12,6 +12,10 @@ from pytorch_lightning.utilities import rank_zero_only
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint, StochasticWeightAveraging, Callback, LearningRateMonitor
 from src.models import TransformerModel
 import os
+import sys
+
+import pickle
+print('PICKLE PROTOCOL: {}'.format(pickle.HIGHEST_PROTOCOL), flush=True)
 
 
 class DatamapCallback(Callback):
@@ -23,7 +27,14 @@ class DatamapCallback(Callback):
         torch.set_grad_enabled(False)
         pl_module.eval()
 
+        print('Running inference for dataset cartography for epoch {}'.format(pl_module.current_epoch),
+              flush=True)
+
+        count = 0
+
         for batch in train_loader:
+
+            count += len(batch['labels'])
 
             batch['input_ids'] = batch['input_ids'].to(pl_module.device)
             batch['token_type_ids'] = batch['token_type_ids'].to(pl_module.device)
@@ -31,15 +42,20 @@ class DatamapCallback(Callback):
             batch['labels'] = batch['labels'].to(pl_module.device)
 
             pl_module.datamap_step(batch)
-        #     check if truncation drop lastremoves error
-        # implement on train end callback fn to save dict to file
+
         # chANGE JOB script
+
+        # print('COUNT: {}'.format(count), flush=True)
 
         torch.set_grad_enabled(True)
         pl_module.train()
 
-        print(pl_module.pred_confidences, flush=True)
-        print(len(pl_module.pred_confidences.keys()), flush=True)
+        return None
+
+    def on_train_end(self, trainer, pl_module) -> None:
+
+        pl_module.write_confidences()
+        sys.exit()
 
         return None
 
@@ -98,7 +114,8 @@ def get_model(config, train_loader):
                              mc_iterations=config.mc_iterations,
                              num_gpus=config.gpus,
                              separate_test_sets=config.separate_test_sets,
-                             train_loader=train_loader)
+                             train_loader=train_loader,
+                             config=config)
 
     return model
 
@@ -124,10 +141,9 @@ def get_trainer(config, logger, batch_size=None, gpus=None):
         # Init early stopping
         early_stopping_callback = EarlyStopping(monitor=config.monitor,
                                                 patience=config.patience,
+                                                min_delta=0.01,
                                                 verbose=True,
                                                 mode=mode)
-
-
 
         # overfit_early_stop = EarlyStopping(monitor='train_acc_epoch',
         #                                    patience=5,
