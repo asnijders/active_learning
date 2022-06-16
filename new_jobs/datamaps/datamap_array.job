@@ -57,7 +57,7 @@ srun python main.py \
             --patience=100 \
             --max_epochs=5 \
             --monitor="val_acc" \
-            --val_check_interval=0.25 \
+            --val_check_interval=1.0 \
             --num_workers=0 \
             --progress_bar \
             --precision=16 \

@@ -153,7 +153,7 @@ class TransformerModel(LightningModule):
         if not os.path.isfile(filepath):
             Path(parent_dir).mkdir(parents=True, exist_ok=True)
 
-        print('Pickling confidences!!', flush=True)
+        print('Pickling confidences...', flush=True)
         if os.path.isfile(filepath):
             os.remove(filepath)
 

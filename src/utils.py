@@ -15,8 +15,6 @@ import os
 import sys
 
 import pickle
-print('PICKLE PROTOCOL: {}'.format(pickle.HIGHEST_PROTOCOL), flush=True)
-
 
 class DatamapCallback(Callback):
 
@@ -55,6 +53,7 @@ class DatamapCallback(Callback):
     def on_train_end(self, trainer, pl_module) -> None:
 
         pl_module.write_confidences()
+        print('Finished dataset cartography.', flush=True)
         sys.exit()
 
         return None
