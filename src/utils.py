@@ -16,9 +16,10 @@ import sys
 
 import pickle
 
+
 class DatamapCallback(Callback):
 
-    def on_train_epoch_end(self, trainer, pl_module):
+    def on_validation_epoch_end(self, trainer, pl_module):
 
         train_loader = trainer.train_dataloader
 
@@ -49,6 +50,38 @@ class DatamapCallback(Callback):
         pl_module.train()
 
         return None
+
+    # def on_train_epoch_end(self, trainer, pl_module):
+    #
+    #     train_loader = trainer.train_dataloader
+    #
+    #     torch.set_grad_enabled(False)
+    #     pl_module.eval()
+    #
+    #     print('Running inference for dataset cartography for epoch {}'.format(pl_module.current_epoch),
+    #           flush=True)
+    #
+    #     count = 0
+    #
+    #     for batch in train_loader:
+    #
+    #         count += len(batch['labels'])
+    #
+    #         batch['input_ids'] = batch['input_ids'].to(pl_module.device)
+    #         batch['token_type_ids'] = batch['token_type_ids'].to(pl_module.device)
+    #         batch['attention_masks'] = batch['attention_masks'].to(pl_module.device)
+    #         batch['labels'] = batch['labels'].to(pl_module.device)
+    #
+    #         pl_module.datamap_step(batch)
+    #
+    #     # chANGE JOB script
+    #
+    #     # print('COUNT: {}'.format(count), flush=True)
+    #
+    #     torch.set_grad_enabled(True)
+    #     pl_module.train()
+    #
+    #     return None
 
     def on_train_end(self, trainer, pl_module) -> None:
 
@@ -202,7 +235,7 @@ def get_trainer(config, logger, batch_size=None, gpus=None):
                       enable_checkpointing=True,
                       enable_model_summary=True,
                       val_check_interval=val_check_interval,
-                      num_sanity_val_steps=1,
+                      num_sanity_val_steps=0,
                       limit_val_batches=config.toy_run,
                       limit_train_batches=config.toy_run,
                       limit_test_batches=config.toy_run,
@@ -210,7 +243,8 @@ def get_trainer(config, logger, batch_size=None, gpus=None):
                       enable_progress_bar=config.progress_bar,
                       precision=config.precision,
                       overfit_batches=config.overfit_batches,
-                      accumulate_grad_batches=config.accumulate_grad_batches)
+                      accumulate_grad_batches=config.accumulate_grad_batches,
+                      track_grad_norm=2)
 
     return trainer
 
