@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=3
 #SBATCH --time=03:00:00
 #SBATCH --mem=32000M
-#SBATCH --output=slurm/uncertainty_output_%A_%a.out
+#SBATCH --output=slurm/metrics/uncertainty_output_%A_%a.out
 #SBATCH --array=1-25%25
 
 module purge
@@ -37,7 +37,7 @@ srun python main.py \
             --output_dir "$TMPDIR/ard_output_dir_results" \
             --checkpoint_dir "$TMPDIR/ard_output_dir_checkpoints" \
             --project_dir="array" \
-            --array_uid="main experiment METRICS woensdag" \
+            --array_uid="main experiment METRICS dinsdag" \
             --metrics_uid="OOD MNLI active learning array donderdag" \
             --model_id="roberta-large" \
             --train_sets="SNLI_1.0,ANLI_1.0,WANLI_1.0" \
@@ -56,7 +56,7 @@ srun python main.py \
             --batch_size=8 \
             --accumulate_grad_batches=4 \
             --patience=2 \
-            --monitor="val_acc" \
+            --monitor="val_loss" \
             --max_epochs=3 \
             --val_check_interval=0.25 \
             --num_workers=0 \

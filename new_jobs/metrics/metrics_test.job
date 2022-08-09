@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=3
 #SBATCH --time=01:00:00
 #SBATCH --mem=32000M
-#SBATCH --output=slurm/output_%A.out
+#SBATCH --output=slurm/metrics/test_output_%A.out
 
 module purge
 module load 2021
@@ -34,7 +34,7 @@ srun python main.py \
             --output_dir "$TMPDIR/ard_output_dir_results" \
             --checkpoint_dir "$TMPDIR/ard_output_dir_checkpoints" \
             --project_dir="array" \
-            --array_uid="OOD MNLI active learning array donderdag METRICS test max-entropy" \
+            --array_uid="OOD MNLI active learning array dinsdag METRICS test feature div training ceiling" \
             --metrics_uid="OOD MNLI active learning array donderdag" \
             --model_id="roberta-large" \
             --train_sets="SNLI_1.0,ANLI_1.0,WANLI_1.0" \
@@ -49,20 +49,21 @@ srun python main.py \
             --dropout=0.3 \
             --mc_iterations=4 \
             --lr=2e-5 \
+            --num_warmup_steps=200 \
             --batch_size=8 \
             --accumulate_grad_batches=4 \
-            --patience=2 \
-            --max_epochs=3 \
+            --patience=10 \
             --monitor="val_acc" \
-            --val_check_interval=0.5 \
+            --training_acc_ceiling=0.75 \
+            --val_check_interval=1.0 \
             --num_workers=0 \
             --progress_bar \
             --precision=16 \
             --log_every=1 \
             --refresh_rate=25 \
-            --metric="uncertainty" \
+            --metric="feature_diversity" \
             --wanli_id_key="pairID" \
-            --acquisition_fn="max-entropy" \
+            --acquisition_fn="random" \
             --seed=42
 
 cp -r "$TMPDIR"/ard_output_dir_results $HOME/active_learning/results

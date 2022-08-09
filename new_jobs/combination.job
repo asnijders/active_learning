@@ -39,7 +39,6 @@ srun python main.py \
             --dev_sets="SNLI,ANLI,WANLI" \
             --ood_sets="MNLI" \
             --test_sets="SNLI,ANLI,WANLI,MNLI" \
-            --max_train_size=4000\
             --max_dev_size=2200\
             --seed_size=4000 \
             --downsample_rate=1.00\

@@ -16,6 +16,42 @@ import sys
 
 import pickle
 
+class WriteTestPredictions(Callback):
+
+    def on_test_epoch_end(self, trainer, pl_module):
+
+        pl_module.reset_confidences()
+        test_loader = trainer.test_dataloaders[0]
+
+        print(test_loader)
+
+        torch.set_grad_enabled(False)
+        pl_module.eval()
+
+        # print('Obtaining test set predictions for {}'.format(test_loader[0]['dataset_ids'][0]), flush=True)
+
+        count = 0
+        dataset_id = ''
+
+        for batch in test_loader:
+
+            count += len(batch['labels'])
+
+            if dataset_id == '':
+                dataset_id = batch['dataset_ids'][0]
+                # print(dataset_id, flush=True)
+
+            batch['input_ids'] = batch['input_ids'].to(pl_module.device)
+            batch['token_type_ids'] = batch['token_type_ids'].to(pl_module.device)
+            batch['attention_masks'] = batch['attention_masks'].to(pl_module.device)
+            batch['labels'] = batch['labels'].to(pl_module.device)
+
+            pl_module.datamap_step(batch)
+
+        torch.set_grad_enabled(True)
+        pl_module.write_confidences(type='test_predictions', dataset='/{}/'.format(dataset_id))
+
+        return None
 
 class DatamapCallback(Callback):
 
@@ -51,42 +87,49 @@ class DatamapCallback(Callback):
 
         return None
 
-    # def on_train_epoch_end(self, trainer, pl_module):
-    #
-    #     train_loader = trainer.train_dataloader
-    #
-    #     torch.set_grad_enabled(False)
-    #     pl_module.eval()
-    #
-    #     print('Running inference for dataset cartography for epoch {}'.format(pl_module.current_epoch),
-    #           flush=True)
-    #
-    #     count = 0
-    #
-    #     for batch in train_loader:
-    #
-    #         count += len(batch['labels'])
-    #
-    #         batch['input_ids'] = batch['input_ids'].to(pl_module.device)
-    #         batch['token_type_ids'] = batch['token_type_ids'].to(pl_module.device)
-    #         batch['attention_masks'] = batch['attention_masks'].to(pl_module.device)
-    #         batch['labels'] = batch['labels'].to(pl_module.device)
-    #
-    #         pl_module.datamap_step(batch)
-    #
-    #     # chANGE JOB script
-    #
-    #     # print('COUNT: {}'.format(count), flush=True)
-    #
-    #     torch.set_grad_enabled(True)
-    #     pl_module.train()
-    #
-    #     return None
-
     def on_train_end(self, trainer, pl_module) -> None:
 
         pl_module.write_confidences()
         print('Finished dataset cartography.', flush=True)
+        sys.exit()
+
+        return None
+
+class TestDatamapCallback(Callback):
+
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+
+        test_dataloader = trainer.val_dataloaders[0]
+
+        torch.set_grad_enabled(False)
+        pl_module.eval()
+
+        print('Running inference for dataset cartography on test set for epoch {}'.format(pl_module.current_epoch),
+              flush=True)
+
+        count = 0
+
+        for batch in test_dataloader:
+
+            count += len(batch['labels'])
+
+            batch['input_ids'] = batch['input_ids'].to(pl_module.device)
+            batch['token_type_ids'] = batch['token_type_ids'].to(pl_module.device)
+            batch['attention_masks'] = batch['attention_masks'].to(pl_module.device)
+            batch['labels'] = batch['labels'].to(pl_module.device)
+
+            pl_module.datamap_step(batch)
+
+        torch.set_grad_enabled(True)
+        pl_module.train()
+
+        return None
+
+    def on_train_end(self, trainer, pl_module) -> None:
+
+        pl_module.write_confidences()
+        print('Finished dataset cartography for test set.', flush=True)
         sys.exit()
 
         return None
@@ -179,7 +222,7 @@ def get_trainer(config, logger, batch_size=None, gpus=None):
 
         # overfit_early_stop = EarlyStopping(monitor='train_acc_epoch',
         #                                    patience=5,
-        #                                    stopping_threshold=0.98,
+        #                                    stopping_threshold=0.9,
         #                                    verbose=True,
         #                                    mode="max",
         #                                    check_on_train_epoch_end=True)
@@ -191,7 +234,11 @@ def get_trainer(config, logger, batch_size=None, gpus=None):
         #                                          mode=mode)
 
         # Init ModelCheckpoint callback, monitoring 'config.monitor'
-        run_dir = config.checkpoint_dir + '/' + config.array_uid.replace(' ','_') + '/' + config.acquisition_fn + '/' + '_'.join(config.train_sets).replace('.','-') + '/' + str(config.seed) + '/'
+        if config.train_difficulty is not None:
+            train_difficulty = '/' + config.train_difficulty + '/'
+        else:
+            train_difficulty = '/'
+        run_dir = config.checkpoint_dir + '/' + config.array_uid.replace(' ','_') + '/' + config.acquisition_fn + '/' + '_'.join(config.train_sets).replace('.','-') + train_difficulty  + str(config.seed) + '/'
         checkpoint_callback = ModelCheckpoint(monitor=config.monitor,
                                               mode=mode,
                                               save_top_k=1,
@@ -209,6 +256,28 @@ def get_trainer(config, logger, batch_size=None, gpus=None):
 
             datamap_callback = DatamapCallback()
             callbacks.append(datamap_callback)
+
+        if config.test_datamap:
+
+            test_datamap_callback = TestDatamapCallback()
+            callbacks.append(test_datamap_callback)
+
+        if config.write_test_preds:
+
+            test_pred_callback = WriteTestPredictions()
+            callbacks.append(test_pred_callback)
+
+        if config.training_acc_ceiling is not None:
+
+            training_ceiling = EarlyStopping(monitor='train_acc_epoch',
+                                            patience=999,
+                                            stopping_threshold=config.training_acc_ceiling,
+                                            verbose=True,
+                                            mode="max",
+                                            check_on_train_epoch_end=True)
+            callbacks.append(training_ceiling)
+
+
 
         # print('WARNING: CALLBACKS IS SET TO NONE (NO CHECKPOINTING OR ANYTHING RELATED)')
         # callbacks = None
@@ -260,7 +329,7 @@ def evaluation_check(dm, config, model, trainer, current_results):
 
     print('Validation accuracy: {}'.format(val_res), flush=True)
     failure = None
-    if val_res < 0.41:
+    if val_res < config.model_check_threshold:
 
         print('Previous model failed. Re-training model for this iteration!', flush=True)
         failure = True
@@ -355,6 +424,7 @@ def evaluate_model(dm, config, model, trainer, logger, split):
                 model.init_metrics()
                 print('Test results for {}'.format(dataset_id), flush=True)
                 results = trainer.test(model, test_loader)
+                # trainer.test_dataloaders = None
 
                 # log test results
                 log_results(logger=logger,

@@ -123,13 +123,16 @@ def main(args):
                                                      current_results=all_results)
 
         if failure:
-            print('Model failed to learn. Restarting training for this AL iteration with a different seed..', flush=True)
-            del_checkpoint(trainer.checkpoint_callback.best_model_path)
-            del model
-            del trainer
-            gc.collect()
-            # seed_everything(config.seed+10, workers=True)
-            continue
+            if config.model_check:
+                print('Model failed to learn. Restarting training for this AL iteration with a different seed..', flush=True)
+                del_checkpoint(trainer.checkpoint_callback.best_model_path)
+                del model
+                del trainer
+                gc.collect()
+                # seed_everything(config.seed+10, workers=True)
+                continue
+            else:
+                pass
 
         else:
             print('Model evaluation check passed!', flush=True)
@@ -180,7 +183,6 @@ def main(args):
         counter += 1
 
         # delete now-redundant checkpoint
-        # print('WARNING - NOT DELETING CHECKPOINTS',flush=True)
         del_checkpoint(trainer.checkpoint_callback.best_model_path)
 
         # some extra precautions to prevent memory leaks
@@ -218,13 +220,17 @@ def main(args):
                                                      current_results=all_results)
 
         if failure:
-            print('Model failed to learn. Restarting training for testing',
-                  flush=True)
-            del_checkpoint(trainer.checkpoint_callback.best_model_path)
-            del model
-            del trainer
-            gc.collect()
-            continue
+            if config.model_check:
+                print('Model failed to learn. Restarting training for testing',
+                      flush=True)
+                del_checkpoint(trainer.checkpoint_callback.best_model_path)
+                del model
+                del trainer
+                gc.collect()
+                continue
+            else:
+                print('Skipping model check', flush=True)
+                done = True
 
         else:
             print('Model evaluation check passed!', flush=True)
@@ -365,6 +371,10 @@ if __name__ == '__main__':
                         help='patience for early stopping')
     parser.add_argument('--val_check_interval', default=0.5, type=float,
                         help='how often to evaluate and checkpoint')
+    parser.add_argument('--training_acc_ceiling', default=None, type=float,
+                        help='toggle training ceiling. Use together w/ val_acc metric!')
+    parser.add_argument('--model_check', action='store_false',
+                        help='toggle model check')
     parser.add_argument('--monitor', default='val_loss', type=str,
                         help='quantity monitored by early stopping / checkpointing callbacks.'
                              'choose between "val_loss" and "val_acc"')
@@ -410,7 +420,12 @@ if __name__ == '__main__':
     parser.add_argument('--wanli_id_key', default='id', type=str, help='wanli id key (pairID for metrics, otherwise id)')
     # choose from uncertainty, input_diversity, feature_diversity
     parser.add_argument('--datamap', action='store_true', help='toggle datamap computation')
+    parser.add_argument('--test_datamap', action='store_true', help='toggle test datamap computation')
+    parser.add_argument('--write_test_preds', action='store_true', help='toggle test pred writing')
     parser.add_argument('--metrics_uid', default=None, type=str, help='id for existing run folder')
+    parser.add_argument('--train_difficulty', default=None, type=str, help='toggle which difficulties to train on')
+    parser.add_argument('--model_check_threshold', default=0.41, type=float, help='set threshold for model reinit')
+
 
     log_every = 50 if device_count() > 0 else 1
     parser.add_argument('--log_every', default=log_every, type=int,

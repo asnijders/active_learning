@@ -133,6 +133,10 @@ class TransformerModel(LightningModule):
 
         return None
 
+    def reset_confidences(self):
+
+        self.pred_confidences = {}
+
     def _log_confidences(self, sample_ids, preds, labels):
 
         for sample_id, pred, label in zip(sample_ids, preds, labels):
@@ -145,10 +149,10 @@ class TransformerModel(LightningModule):
 
         return None
 
-    def write_confidences(self):
+    def write_confidences(self, type='datamap', dataset=''):
 
-        parent_dir = self.config.output_dir + '/datamaps/' + self.config.project_dir + '/' + self.config.array_uid.replace(' ', '_') + '/' + self.config.model_id + '/' + self.config.acquisition_fn + '/' + str(self.config.seed)
-        filepath = parent_dir + '/confidences.pickle'
+        parent_dir = self.config.output_dir + '/{}/'.format(type) + self.config.project_dir + '/' + self.config.array_uid.replace(' ', '_') + '/' + self.config.acquisition_fn + '/'  + str(self.config.seed) + '{}'.format(dataset)
+        filepath = parent_dir + '/{}.pickle'.format(type)
 
         if not os.path.isfile(filepath):
             Path(parent_dir).mkdir(parents=True, exist_ok=True)

@@ -8,7 +8,7 @@
 #SBATCH --time=00:15:00
 #SBATCH --mem=32000M
 #SBATCH --output=slurm/input_div_output_%A_%a.out
-#SBATCH --array=1-25%25
+#SBATCH --array=1-20%20
 
 module purge
 module load 2021
@@ -37,18 +37,18 @@ srun python main.py \
             --output_dir "$TMPDIR/ard_output_dir_results" \
             --checkpoint_dir "$TMPDIR/ard_output_dir_checkpoints" \
             --project_dir="array" \
-            --array_uid="main experiment METRICS woensdag" \
-            --metrics_uid="OOD MNLI active learning array donderdag" \
+            --array_uid="main experiment METRICS WANLI 25-07" \
+            --metrics_uid="WANLI baseline" \
             --model_id="roberta-large" \
-            --train_sets="SNLI_1.0,ANLI_1.0,WANLI_1.0" \
-            --dev_sets="SNLI,ANLI,WANLI" \
-            --ood_sets="MNLI" \
-            --test_sets="SNLI,ANLI,WANLI,MNLI" \
+            --train_sets="WANLI_1.0" \
+            --dev_sets="WANLI" \
+            --ood_sets="WANLI" \
+            --test_sets="WANLI" \
             --max_dev_size=2200 \
             --seed_size=500 \
-            --downsample_rate=0.20 \
-            --labelling_batch_size=250 \
-            --al_iterations=14 \
+            --downsample_rate=0.2 \
+            --labelling_batch_size=500 \
+            --al_iterations=7 \
             --dropout=0.3 \
             --mc_iterations=4 \
             --lr=2e-5 \

@@ -7,8 +7,8 @@
 #SBATCH --cpus-per-task=3
 #SBATCH --time=20:00:00
 #SBATCH --mem=32000M
-#SBATCH --output=slurm/output_%A_%a.out
-#SBATCH --array=1-25%25
+#SBATCH --output=slurm/AL_array/output_%A_%a.out
+#SBATCH --array=1-20%20
 
 module purge
 module load 2021
@@ -19,7 +19,7 @@ cd $HOME/active_learning
 # copy all data from home folder to SCRATCH
 cp -r $HOME/active_learning/resources/. "$TMPDIR"
 # also copy acquisition ID data from previous run to SCRATCH
-cp -r $HOME/active_learning/results/ard_output_dir_results. "$TMPDIR"
+cp -r $HOME/active_learning/results/. "$TMPDIR"
 
 # create folder on scratch disk to store output
 mkdir "$TMPDIR"/ard_output_dir_checkpoints
@@ -30,7 +30,7 @@ cd $HOME/active_learning
 # Activate your environment
 source activate active
 
-HPARAMS_FILE=$HOME/active_learning/new_jobs/hparams/array_job_hyperparameters_remainder.txt
+HPARAMS_FILE=$HOME/active_learning/new_jobs/hparams/array_job_hyperparameters.txt
 
 # Run your code
 srun python main.py \
@@ -38,9 +38,7 @@ srun python main.py \
             --output_dir "$TMPDIR/ard_output_dir_results" \
             --checkpoint_dir "$TMPDIR/ard_output_dir_checkpoints" \
             --project_dir="array" \
-            --array_uid="OOD MNLI active learning array donderdag METRICS" \
-            --metrics \
-            --metrics_uid="OOD MNLI active learning array donderdag" \
+            --array_uid="main experiment herhaald dubbele acq batch size woensdag" \
             --model_id="roberta-large" \
             --train_sets="SNLI_1.0,ANLI_1.0,WANLI_1.0" \
             --dev_sets="SNLI,ANLI,WANLI" \
@@ -48,12 +46,13 @@ srun python main.py \
             --test_sets="SNLI,ANLI,WANLI,MNLI" \
             --max_dev_size=2200\
             --seed_size=500 \
-            --downsample_rate=0.20\
-            --labelling_batch_size=250 \
-            --al_iterations=14 \
+            --downsample_rate=0.20 \
+            --labelling_batch_size=500 \
+            --al_iterations=7 \
             --dropout=0.3 \
             --mc_iterations=4 \
-            --lr=5e-6 \
+            --lr=2e-5 \
+            --num_warmup_steps=250 \
             --batch_size=8 \
             --accumulate_grad_batches=4 \
             --patience=10 \
@@ -63,6 +62,8 @@ srun python main.py \
             --precision=16 \
             --log_every=1 \
             --refresh_rate=25 \
+            --wanli_id_key="pairID" \
+            --write_test_preds \
             $(head -$SLURM_ARRAY_TASK_ID $HPARAMS_FILE | tail -1)
 
 cp -r "$TMPDIR"/ard_output_dir_results $HOME/active_learning/results

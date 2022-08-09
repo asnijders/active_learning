@@ -5,10 +5,10 @@
 #SBATCH --job-name=metrics_test
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=3
-#SBATCH --time=03:00:00
+#SBATCH --time=05:00:00
 #SBATCH --mem=32000M
 #SBATCH --output=slurm/datamap_array/output_%A_%a.out
-#SBATCH --array=1-5%5
+#SBATCH --array=1-4%4
 
 module purge
 module load 2021
@@ -36,8 +36,8 @@ srun python main.py \
             --input_dir "$TMPDIR/ard_data" \
             --output_dir "$TMPDIR/ard_output_dir_results" \
             --checkpoint_dir "$TMPDIR/ard_output_dir_checkpoints" \
-            --project_dir="array" \
-            --array_uid="datamap array" \
+            --project_dir="test" \
+            --array_uid="datamap test subepoch inference elke 0.5 epochs" \
             --model_id="roberta-large" \
             --train_sets="SNLI_1.0,ANLI_1.0,WANLI_1.0" \
             --dev_sets="SNLI,ANLI,WANLI" \
@@ -50,14 +50,14 @@ srun python main.py \
             --al_iterations=0 \
             --dropout=0.3 \
             --mc_iterations=4 \
-            --lr=2e-5 \
+            --lr=1e-6 \
             --num_warmup_steps=0 \
             --batch_size=8 \
             --accumulate_grad_batches=12 \
-            --patience=100 \
-            --max_epochs=5 \
-            --monitor="val_acc" \
-            --val_check_interval=1.0 \
+            --patience=5 \
+            --max_epochs=3 \
+            --monitor="val_loss" \
+            --val_check_interval=0.5 \
             --num_workers=0 \
             --progress_bar \
             --precision=16 \

@@ -1,0 +1,2 @@
+"Name","train_sets","ANLI_test_acc_epoch","MNLI_test_acc_epoch","SNLI_test_acc_epoch","WANLI_test_acc_epoch"
+"""unique combinations attempt 8 betere checkpoints""","[""SNLI_0.5"",""ANLI_0.25"",""WANLI_0.25"",""SNLI_0.25"",""WANLI_0.5"",""ANLI_0.0"",""ANLI_0.5"",""WANLI_0.0"",""ANLI_0.75"",""SNLI_0.0""]","0.35120320802225785","0.7412196511731428","0.8058356467415305","0.637767485835973"

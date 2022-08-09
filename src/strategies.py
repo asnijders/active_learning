@@ -30,6 +30,7 @@ from pytorch_lightning import Trainer
 from src.utils import get_trainer
 import time
 import gc
+import copy
 
 # local imports
 from src.utils import del_checkpoint
@@ -90,6 +91,62 @@ class RandomSampler(AcquisitionFunction):
 
         return k_random_indices
 
+class Wordoverlap(AcquisitionFunction):
+
+    def __init__(self, logger=None):
+        super().__init__()
+
+    def process_sentence(self, sentence):
+
+        for char in [',', '.', '?', '!', ':', ';', "'", '"', ')', '(', '<br>']:
+            sentence = sentence.replace(char, '').lower()
+        return sentence.split()
+
+    def get_set_of_tokens(self, dataset):
+
+        dataset = copy.deepcopy(dataset)
+
+        # join sentences from Premise and Hypothesis column into single string
+        dataset['Combined'] = dataset['Premise'] + ' ' + dataset['Hypothesis']
+        list_of_tokens = []
+        # split each sentence into tokens and add to list
+        for sentence in dataset['Combined'].tolist():
+            sentence = self.process_sentence(sentence)
+            list_of_tokens.extend(sentence)
+        # return set of unique tokens
+        return set(list_of_tokens)
+
+    def get_overlap(self, dataset, dev_tokens):
+
+        dataset = copy.deepcopy(dataset)
+
+        dataset['Combined'] = dataset['Premise'] + ' ' + dataset['Hypothesis']
+        overlap = []
+        for sentence in dataset['Combined'].tolist():
+            sentence = self.process_sentence(sentence)
+
+            overlap.append((len(set(sentence).intersection(dev_tokens))) / len(sentence))
+
+            # intersection = set(sentence).intersection(dev_tokens)  # get intersection between U and L
+            # union = set(sentence).union(dev_tokens)  # get union of U and L
+            #
+            # input_diversity = len(intersection) / len(union)
+            # overlap.append(input_diversity)
+
+        return overlap
+
+    def acquire_instances(self, config, model, dm, k):
+
+        # get set of tokens for dev set
+        dev_tokens = self.get_set_of_tokens(dataset=dm.val.L)
+
+        # compute mean overlap of each unlabelled example in dev set
+        overlap = self.get_overlap(dataset=dm.train.U,
+                                   dev_tokens=dev_tokens)
+
+        highest_overlap = np.argsort(overlap)[::-1][:k]
+
+        return highest_overlap
 
 class LeastConfidence(AcquisitionFunction):
 
@@ -498,6 +555,9 @@ def select_acquisition_fn(fn_id, logger):
 
     elif fn_id == 'dal':
         acquisition_fn = DiscriminativeActiveLearner(logger=logger)
+
+    elif fn_id == 'overlap':
+        acquisition_fn = Wordoverlap()
 
     else:
         raise KeyError('No acquisition function found for {}'.format(fn_id))

@@ -117,7 +117,7 @@ def apply_ratios(pool, dataset_ids, data_ratios, max_pool_size, seed):
     return new_pool
 
 
-def read_dataset(input_dir, dataset_id, split, seed, wanli_id):
+def read_dataset(input_dir, dataset_id, split, seed, wanli_id, train_difficulty, config):
     """
     This function takes a dataset id and reads the corresponding .json split in an appropriate Pandas DataFrame
     :param wanli_id: id key for wanli json file (pairID for metrics, id for non metric stuff)
@@ -225,11 +225,112 @@ def read_dataset(input_dir, dataset_id, split, seed, wanli_id):
 
     # ensure consistent headers per dataset DataFrame
     dataset.columns = ['Premise', 'Hypothesis', 'Label', 'ID', 'Dataset']
-
     dataset['ID'] = dataset['ID'].astype('string')
+
+    if split == 'train' and train_difficulty is not None:
+
+        dataset = filter_by_difficulty(dataset, dataset_id, train_difficulty, seed, config)
 
     return dataset
 
+
+def filter_by_difficulty(dataset, dataset_id, train_difficulty, seed, config):
+
+    def load_confidences(path, predictions=False):
+
+        df = pd.read_pickle(path)
+        sample_ids = list(df.keys())
+
+        cartography_dict = {}
+        prediction_dict = {}
+
+        for sample_id in sample_ids:
+
+            times_correct = []
+            confidences = []
+
+            outputs = df[sample_id]
+            outputs = outputs[1:]  # don't count the first 0.5 epoch!
+
+            for output in outputs:
+                # extract values from output tuple
+                prediction = output[0]
+                label = output[1]
+
+                # obtain GT confidence, determine correctness of prediction
+                confidence = prediction[label]
+                correct = 1 if prediction.index(max(prediction)) == label else 0
+
+                # track confidence and correctness
+                confidences.append(confidence)
+                times_correct.append(correct)
+
+            cartography_dict[sample_id] = {'confidence': np.mean(confidences),
+                                           'variability': np.std(confidences),
+                                           'correctness': np.mean(times_correct)}
+
+            prediction_dict[sample_id] = {'prediction': outputs[-1][0]}
+
+        confidences = [cartography_dict[key]['confidence'] for key in list(cartography_dict.keys())]
+        variability = [cartography_dict[key]['variability'] for key in list(cartography_dict.keys())]
+        correctness = [cartography_dict[key]['correctness'] for key in list(cartography_dict.keys())]
+
+        df = pd.DataFrame(list(zip(sample_ids, confidences, variability, correctness)),
+                          columns=['id', 'mean_conf', 'variability', 'correctness'])
+
+        if predictions == False:
+            return df
+        else:
+            return df, prediction_dict
+
+    # 1 load list of confidences for this seed;
+    parent_dir = config.output_dir + '/datamaps/test/datamap_test_subepoch_inference_elke_0.5_epochs/' + config.model_id + '/random/' + str(config.seed)
+    filepath = parent_dir + '/confidences.pickle'
+
+    confidence_df = load_confidences(filepath)
+
+    def get_difficulty_segment(confidences, dataset, difficulty, N=7000):
+
+        # first select examples from particular segment
+        if difficulty == 'easy':
+            segment = confidences[confidences.mean_conf >= 0.75]
+        elif difficulty == 'medium':
+            segment = confidences[(confidences.mean_conf >= 0.5) & (confidences.mean_conf < 0.75)]
+        elif difficulty == 'hard':
+            segment = confidences[(confidences.mean_conf >= 0.25) & (confidences.mean_conf < 0.5)]
+        elif difficulty == 'impossible':
+            segment = confidences[(confidences.mean_conf < 0.25)]
+
+        # then see which of those examples are in the current dataset and truncate to N examples per segment
+        return dataset[dataset.ID.isin(segment.id)] #.sample(n=N, random_state=seed)
+
+    algo = 'per_product'
+
+    if algo == 'per_segment':
+        dataset_list = []
+        for difficulty in train_difficulty.split('_'):
+
+            difficulty_segment = get_difficulty_segment(confidences=confidence_df,
+                                                        dataset=dataset,
+                                                        difficulty=difficulty)
+
+            print('Number of examples in {}: {}'.format(difficulty, len(difficulty_segment)), flush=True)
+            dataset_list.append(difficulty_segment)
+
+        dataset = pd.concat(dataset_list)
+        print(len(dataset), flush=True)
+
+        return dataset
+
+    elif algo == 'per_product':
+
+        print('Current dataset size: {}'.format(len(dataset[dataset.ID.isin(confidence_df.id)])), flush=True)
+        print('Filtering out bottom 25 percentage of data with lowest confidence-variability products', flush=True)
+        confidence_df['product'] = confidence_df['mean_conf'] * confidence_df['variability']
+        confidence_df = confidence_df.sort_values(by=['product'])[int(0.25 * len(confidence_df)):]
+        print('Dataset size after filtering: {}'.format(len(dataset[dataset.ID.isin(confidence_df.id)])), flush=True)
+
+        return dataset[dataset.ID.isin(confidence_df.id)]
 
 def combine_datasets(input_dir,
                      datasets,
@@ -239,9 +340,11 @@ def combine_datasets(input_dir,
                      max_pool_size,
                      max_dev_size,
                      split,
+                     config,
                      downsample_rate,
                      seed,
                      wanli_id,
+                     train_difficulty,
                      undersample,
                      perturb):
     """
@@ -281,7 +384,9 @@ def combine_datasets(input_dir,
                                dataset_id=dataset_id,
                                split=split,
                                seed=seed,
-                               wanli_id=wanli_id)
+                               wanli_id=wanli_id,
+                               train_difficulty=train_difficulty,
+                               config=config)
 
         if split == 'train' and data_ratios != None and max_pool_size != None:
 
@@ -399,7 +504,9 @@ class DataPool(Dataset):
                                       split=split,
                                       downsample_rate=self.downsample_rate,
                                       seed=self.random_seed,
+                                      config=self.config,
                                       wanli_id=self.config.wanli_id_key,
+                                      train_difficulty = self.config.train_difficulty,
                                       undersample=self.undersample,
                                       perturb=self.perturb)
 
@@ -422,7 +529,9 @@ class DataPool(Dataset):
                                       split=split,
                                       downsample_rate=self.downsample_rate,
                                       seed=self.random_seed,
+                                      config=self.config,
                                       wanli_id=self.config.wanli_id_key,
+                                      train_difficulty=self.config.train_difficulty,
                                       undersample=self.undersample,
                                       perturb=self.perturb)
 
@@ -449,6 +558,11 @@ class DataPool(Dataset):
             idx = idx.tolist()
 
         # print(self.data.iloc[idx], flush=True)
+
+        if len(self.data.iloc[idx]) > 6:
+            print(self.data.columns, flush=True)
+            print(self.data.iloc[idx], flush=True)
+        # print(len(self.data.iloc[idx]), flush=True)
 
         premise, hypothesis, label, sample_id, dataset_id, sample_idx = self.data.iloc[idx]
 
@@ -640,20 +754,6 @@ class DataPool(Dataset):
         print('No of indices found: ', flush=True)
         print(len(indices), flush=True)
 
-        # for sample_id in acquired_df_ids:
-        #
-        #     index = relative_dataset[relative_dataset.ID.str.contains(sample_id)].index
-        #     if len(index.values) > 0:
-        #         indices.append(index.values[0])
-        #     else:
-        #         print(sample_id, index.values, flush=True)
-        #
-        #     if sample_id not in seen:
-        #         seen.append(sample_id)
-        #     else:
-        #         print('Duplicate samples:')
-        #         print(sample_id, flush=True)
-
         print('{} duplicates found in acquired data'.format(len(seen)), flush=True)
         indices = list(set(indices))
 
@@ -763,10 +863,12 @@ class GenericDataModule(pl.LightningDataModule):
 
             print('\nBuilding dev and test sets..', flush=True)
             if self.val is None:
-                # self.config.seed = 39
+                dev_split = 'dev'
+                if self.config.test_datamap:
+                    dev_split = 'test'
                 self.val = DataPool(config=self.config,
                                     datasets=self.config.dev_sets,
-                                    split='dev',
+                                    split=dev_split,
                                     seed=fixed_seed)
 
             if self.config.ood_sets is not None:
